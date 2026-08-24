@@ -1,6 +1,10 @@
 .DS_Store
+recordings/
 xcuserdata/
 DerivedData/
+.derivedData/
+.build-log.txt
+.build-number
 build/
 *.xcuserstate
 .swiftpm/

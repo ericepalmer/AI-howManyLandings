@@ -60,7 +60,7 @@ struct AircraftGlyph: View {
 
         glyph(size: size)
             .rotationEffect(.degrees(heading))
-            .shadow(color: color.opacity(0.45), radius: isInspected ? 4 : 1)
+            .shadow(color: color.opacity(isInspected ? 0.95 : 0.45), radius: isInspected ? 8 : 1)
     }
 
     @ViewBuilder
@@ -76,7 +76,12 @@ struct AircraftGlyph: View {
     private func painted<S: Shape>(_ shape: S, size: CGFloat) -> some View {
         shape
             .fill(color)
-            .overlay(shape.stroke(Color.black.opacity(0.55), lineWidth: 0.7))
+            .overlay(
+                shape.stroke(
+                    isInspected ? Color.white.opacity(0.9) : Color.black.opacity(0.55),
+                    lineWidth: isInspected ? 1.1 : 0.7
+                )
+            )
             .frame(width: size, height: size)
     }
 }

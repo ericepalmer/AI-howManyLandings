@@ -4,12 +4,12 @@ import Foundation
 /// One rectangular traffic pattern per runway, sized from the field center.
 ///
 /// - Downwind: 0.75 NM from the runway, parallel
-/// - Crosswind end: 2 NM past field center along the runway heading
-/// - Base end: 3 NM past field center on the reciprocal heading
+/// - Crosswind end: 1.25 NM past field center along the runway heading
+/// - Base end: 2 NM past field center on the reciprocal heading
 enum TrafficPattern {
     static let downwindOffsetNM = 0.75
-    static let crosswindFromCenterNM = 2.0
-    static let baseFromCenterNM = 3.0
+    static let crosswindFromCenterNM = 1.25  // was 2.0; shortened departure side by 0.75 NM
+    static let baseFromCenterNM = 2.0        // was 3.0; shortened approach side by 1.0 NM
     static let cornerRadiusNM = 0.12
 
     enum Side: Hashable {

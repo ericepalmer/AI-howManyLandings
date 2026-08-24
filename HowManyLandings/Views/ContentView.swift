@@ -18,7 +18,9 @@ struct ContentView: View {
                 airports: airports,
                 events: events,
                 selectedICAO: $engine.selectedICAO,
-                onDelete: deleteAirports
+                selectedEventIDs: $engine.selectedEventIDs,
+                sessionStartedAt: engine.sessionStartedAt ?? Date(),
+                onRemove: removeAirport
             )
         } detail: {
             if let airport = engine.selectedAirport(from: airports) {
@@ -43,10 +45,12 @@ struct ContentView: View {
         }
     }
 
-    private func deleteAirports(at offsets: IndexSet) {
-        for index in offsets {
-            modelContext.delete(storedAirports[index])
+    private func removeAirport(_ airport: Airport) {
+        guard let stored = storedAirports.first(where: { $0.icao == airport.icao }) else { return }
+        if engine.selectedICAO == airport.icao {
+            engine.selectedICAO = storedAirports.first { $0.icao != airport.icao }?.icao
         }
+        modelContext.delete(stored)
         try? modelContext.save()
     }
 }
@@ -55,21 +59,78 @@ private struct AirportDetailView: View {
     let airport: Airport
     let events: [StoredTrafficEvent]
     @Environment(TrackingEngine.self) private var engine
+    @Environment(\.openWindow) private var openWindow
+    @State private var trackDump: TrackDumpPayload?
 
     var body: some View {
+        @Bindable var engine = engine
+        let selectedEvents = events.filter { engine.selectedEventIDs.contains($0.eventID) }
+        let selectedICAO24s: Set<String> = {
+            var ids = Set(selectedEvents.map(\.aircraftICAO24))
+            if let tracker = engine.selectedTrackerICAO24 {
+                ids.insert(tracker)
+            }
+            return ids
+        }()
+        let highlightedTracks = mapTracks(
+            selectedEvents: selectedEvents,
+            liveAircraft: engine.selectedAircraft
+        )
+
         HStack(spacing: 0) {
-            AirportMapView(airport: airport, aircraft: engine.selectedAircraft)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            AirportMapView(
+                airport: airport,
+                aircraft: engine.selectedAircraft,
+                activeRunwayDirection: engine.selectedActiveRunway,
+                highlightedTracks: highlightedTracks,
+                selectedICAO24s: selectedICAO24s,
+                selectedTrackerICAO24: engine.selectedTrackerICAO24,
+                onSelectAircraft: { icao in
+                    engine.selectedEventIDs = []
+                    if engine.selectedTrackerICAO24 == icao {
+                        engine.selectedTrackerICAO24 = nil
+                    } else {
+                        engine.selectedTrackerICAO24 = icao
+                    }
+                },
+                externalTrackDump: $trackDump
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Divider()
 
-            StatsPanelView(
+            PatternTrackerView(
                 airport: airport,
-                events: events,
-                sessionStartedAt: engine.sessionStartedAt ?? Date()
+                aircraft: engine.selectedAircraft,
+                selectedICAO24: $engine.selectedTrackerICAO24,
+                onDump: { ac in
+                    trackDump = TrackDumpPayload(
+                        id: UUID(),
+                        title: ac.snapshot.displayLabel,
+                        subtitle: "Pattern track",
+                        airportICAO: airport.icao,
+                        airportElevationFt: airport.elevationFt,
+                        icao24: ac.id,
+                        reportedKind: ac.flightState?.rawValue,
+                        reportedTime: ac.lastSeen,
+                        points: ac.track
+                    )
+                },
+                onPlanePicked: { engine.selectedEventIDs = [] },
+                onShowADS: { openWindow(id: "ads-feed") }
             )
-            .frame(width: 320)
+            .frame(width: 300)
         }
+        .overlay {
+            if !engine.hasLiveFeed(for: airport.icao) {
+                ZStack {
+                    Color.black.opacity(0.32)
+                    ConnectionOverlay(airport: airport)
+                }
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.28), value: engine.liveAirportICAOs.contains(airport.icao))
         .navigationTitle(airport.icao)
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -95,6 +156,48 @@ private struct AirportDetailView: View {
                 }
             }
         }
+        .onChange(of: airport.icao) { _, _ in
+            engine.selectedEventIDs = []
+            engine.selectedTrackerICAO24 = nil
+        }
+        .sheet(item: $trackDump) { dump in
+            TrackDumpSheet(dump: dump)
+        }
+    }
+
+    private func mapTracks(
+        selectedEvents: [StoredTrafficEvent],
+        liveAircraft: [LandingDetector.TrackedAircraft]
+    ) -> [HighlightedSavedTrack] {
+        let liveByICAO = Dictionary(uniqueKeysWithValues: liveAircraft.map { ($0.id, $0) })
+        var tracks: [HighlightedSavedTrack] = []
+        var seenEventIDs = Set<UUID>()
+
+        for event in selectedEvents where event.kind.countsAsLanding {
+            guard seenEventIDs.insert(event.eventID).inserted else { continue }
+            let live = liveByICAO[event.aircraftICAO24]
+            let points = TrackSmoother.landingReplayPoints(
+                stored: event.track,
+                live: live?.track ?? [],
+                landingAt: event.timestamp
+            )
+            guard points.count >= 2 else { continue }
+            tracks.append(
+                HighlightedSavedTrack(
+                    id: event.eventID,
+                    label: "\(event.tailNumber) · \(event.kind.title)",
+                    points: points,
+                    color: TrackPalette.swatch(for: event.aircraftICAO24),
+                    icao24: event.aircraftICAO24,
+                    kindTitle: event.kind.title,
+                    eventTimestamp: event.timestamp,
+                    airportICAO: event.airportICAO,
+                    isEmphasized: true
+                )
+            )
+        }
+
+        return tracks
     }
 }
 
@@ -105,7 +208,7 @@ private struct EmptyTrackingView: View {
         ContentUnavailableView {
             Label("No airport selected", systemImage: "airplane.circle")
         } description: {
-            Text("Add an airport by ICAO, FAA ID, or name to start counting landings — including each touch-and-go in the pattern.")
+            Text("Add an airport by ICAO, FAA ID, or name to start tracking pattern traffic and counting landings.")
         } actions: {
             Button {
                 engine.showingAddAirport = true

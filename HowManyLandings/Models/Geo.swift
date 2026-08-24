@@ -2,8 +2,15 @@ import Foundation
 import CoreLocation
 
 enum Geo {
-    static let trackingRadiusNM = 10.0
+    static let defaultTrackingRadiusNM = 10.0
     static let innerRingNM = 5.0
+    /// Pattern / tracker ring: aircraft inside this radius and at/below pattern AGL.
+    static let patternRadiusNM = 5.0
+    static let patternMaxAGLFt = 2_000.0
+    /// Tracker card stays this long after ADS-B is lost.
+    static let trackerCoastSeconds: TimeInterval = 5 * 60
+    /// Default map trails (nothing selected) show this much recent history.
+    static let recentTrailSeconds: TimeInterval = 5 * 60
     static let metersPerNauticalMile = 1852.0
     static let metersPerFoot = 0.3048
     static let knotsPerMetersPerSecond = 1.94384
@@ -14,6 +21,40 @@ enum Geo {
         var lomin: Double
         var lamax: Double
         var lomax: Double
+    }
+
+    /// Taxi / parked without a reliable ADS-B `onGround` bit.
+    static let surfaceAGLFt = 50.0
+    static let surfaceSpeedKt = 35.0
+
+    /// Inside 5 NM and ≤ 2,000 ft AGL while airborne — likely in the pattern.
+    /// Surface ops stay on the map (status Ground) but off the pattern list until airborne.
+    static func isInPattern(
+        coordinate: CLLocationCoordinate2D,
+        onGround: Bool,
+        altitudeAGLFt: Double?,
+        groundSpeedKt: Double?,
+        airport: Airport
+    ) -> Bool {
+        if isSurfaceOps(onGround: onGround, altitudeAGLFt: altitudeAGLFt, groundSpeedKt: groundSpeedKt) {
+            return false
+        }
+        let distance = distanceNM(coordinate, airport.coordinate)
+        guard distance <= patternRadiusNM else { return false }
+        guard let agl = altitudeAGLFt, agl >= 0 else { return false }
+        return agl <= patternMaxAGLFt
+    }
+
+    /// True when the target is on the surface (flag, below field, or low-and-slow).
+    static func isSurfaceOps(
+        onGround: Bool,
+        altitudeAGLFt: Double?,
+        groundSpeedKt: Double?
+    ) -> Bool {
+        if onGround { return true }
+        guard let agl = altitudeAGLFt else { return false }
+        if agl < 0 { return true }
+        return agl < surfaceAGLFt && (groundSpeedKt ?? 0) < surfaceSpeedKt
     }
 
     static func meters(fromNM nm: Double) -> Double { nm * metersPerNauticalMile }
@@ -92,10 +133,48 @@ enum Geo {
         return raw > 180 ? 360 - raw : raw
     }
 
+    static func normalizeHeading(_ deg: Double) -> Double {
+        let wrapped = deg.truncatingRemainder(dividingBy: 360)
+        return wrapped < 0 ? wrapped + 360 : wrapped
+    }
+
+    static func isAbout(_ track: Double, _ heading: Double, tolerance: Double) -> Bool {
+        headingDelta(track, heading) <= tolerance
+    }
+
+    /// True when `track` is roughly ±90° from `heading`.
+    static func isPerpendicular(_ track: Double, to heading: Double, tolerance: Double = 28) -> Bool {
+        isAbout(track, heading + 90, tolerance: tolerance)
+            || isAbout(track, heading - 90, tolerance: tolerance)
+    }
+
     static func isAligned(track: Double, runwayHeading: Int, tolerance: Double = 30) -> Bool {
         let reciprocal = Double((runwayHeading + 180) % 360)
         return headingDelta(track, Double(runwayHeading)) <= tolerance
             || headingDelta(track, reciprocal) <= tolerance
+    }
+
+    /// East/north offset in nautical miles from `origin` to `point`.
+    static func localNM(from origin: CLLocationCoordinate2D, to point: CLLocationCoordinate2D) -> (east: Double, north: Double) {
+        let lat1 = origin.latitude * .pi / 180
+        let dLat = (point.latitude - origin.latitude) * .pi / 180
+        let dLon = (point.longitude - origin.longitude) * .pi / 180
+        let north = dLat * 6_371_000.0 / metersPerNauticalMile
+        let east = dLon * cos(lat1) * 6_371_000.0 / metersPerNauticalMile
+        return (east, north)
+    }
+
+    /// Along-track (positive forward) and right-of-track cross-track, nautical miles.
+    static func alongAndCrossNM(
+        point: CLLocationCoordinate2D,
+        origin: CLLocationCoordinate2D,
+        headingDeg: Double
+    ) -> (along: Double, crossRight: Double) {
+        let en = localNM(from: origin, to: point)
+        let h = headingDeg * .pi / 180
+        let along = en.east * sin(h) + en.north * cos(h)
+        let crossRight = en.east * cos(h) - en.north * sin(h)
+        return (along, crossRight)
     }
 
     static func coordinate(
@@ -121,5 +200,18 @@ enum Geo {
         let x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
         let degrees = atan2(y, x) * 180 / .pi
         return (degrees + 360).truncatingRemainder(dividingBy: 360)
+    }
+
+    /// Closed ring of coordinates around `center` at `radiusNM`.
+    static func circleCoordinates(
+        center: CLLocationCoordinate2D,
+        radiusNM: Double,
+        pointCount: Int = 72
+    ) -> [CLLocationCoordinate2D] {
+        let count = max(8, pointCount)
+        return (0..<count).map { index in
+            let bearing = Double(index) * 360.0 / Double(count)
+            return coordinate(from: center, distanceNM: radiusNM, bearingDeg: bearing)
+        }
     }
 }

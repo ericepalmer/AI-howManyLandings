@@ -2,7 +2,117 @@ import CoreLocation
 import Foundation
 
 enum TrackSmoother {
-    /// Split a track where ADS-B gaps would create unrealistic straight jumps.
+    /// A drawable track piece: real ADS-B (possibly smoothed) or a dotted gap bridge.
+    struct PathLeg: Sendable {
+        var coordinates: [CLLocationCoordinate2D]
+        var isExtrapolated: Bool
+    }
+
+    /// Consecutive ADS-B samples closer than this are treated as continuous (solid).
+    static let gapThresholdSeconds: TimeInterval = 45
+    static let gapThresholdNM: Double = 1.2
+    /// Larger gaps are not bridged (too uncertain).
+    static let maxBridgeSeconds: TimeInterval = 180
+    static let maxBridgeNM: Double = 4.0
+
+    /// Build solid observed legs plus dotted bridges across ADS-B gaps.
+    static func pathLegs(from points: [TrackPoint], stepsPerLeg: Int = 4) -> [PathLeg] {
+        let ordered = thin(points, maxPoints: 100)
+        guard ordered.count >= 2 else { return [] }
+
+        var legs: [PathLeg] = []
+        var observed: [TrackPoint] = [ordered[0]]
+
+        for index in 1..<ordered.count {
+            let previous = ordered[index - 1]
+            let current = ordered[index]
+            let dt = current.timestamp.timeIntervalSince(previous.timestamp)
+            let dist = Geo.distanceNM(previous.coordinate, current.coordinate)
+            let isGap = dt > gapThresholdSeconds || dist > gapThresholdNM
+            let tooFar = dt > maxBridgeSeconds || dist > maxBridgeNM
+
+            if isGap {
+                if observed.count >= 2 {
+                    legs.append(
+                        PathLeg(
+                            coordinates: smoothCoordinates(from: observed, stepsPerLeg: stepsPerLeg),
+                            isExtrapolated: false
+                        )
+                    )
+                }
+
+                if !tooFar {
+                    legs.append(
+                        PathLeg(
+                            coordinates: [previous.coordinate, current.coordinate],
+                            isExtrapolated: true
+                        )
+                    )
+                }
+                observed = [current]
+            } else {
+                observed.append(current)
+            }
+        }
+
+        if observed.count >= 2 {
+            legs.append(
+                PathLeg(
+                    coordinates: smoothCoordinates(from: observed, stepsPerLeg: stepsPerLeg),
+                    isExtrapolated: false
+                )
+            )
+        }
+
+        return legs
+    }
+
+    /// Points inside the default “nothing selected” window.
+    static func recent(_ points: [TrackPoint], now: Date = Date()) -> [TrackPoint] {
+        window(points, from: now.addingTimeInterval(-Geo.recentTrailSeconds), through: nil)
+    }
+
+    /// Inclusive time window. `through` nil means open-ended.
+    static func window(_ points: [TrackPoint], from start: Date, through end: Date?) -> [TrackPoint] {
+        points.filter { point in
+            point.timestamp >= start && (end == nil || point.timestamp <= end!)
+        }
+    }
+
+    /// Replay a landing from the frozen snapshot only. Never use the live trail:
+    /// that array is trimmed to 5 minutes in place and would go empty after touchdown.
+    static func landingReplayPoints(stored: [TrackPoint], live: [TrackPoint], landingAt: Date) -> [TrackPoint] {
+        if stored.count >= 2 {
+            return stored.sorted { $0.timestamp < $1.timestamp }
+        }
+        let through = landingAt.addingTimeInterval(5)
+        let liveToLanding = window(live, from: Date.distantPast, through: through)
+        if liveToLanding.count >= 2 {
+            return liveToLanding.sorted { $0.timestamp < $1.timestamp }
+        }
+        return stored.sorted { $0.timestamp < $1.timestamp }
+    }
+
+    /// Keep endpoints; drop intermediate samples so MapKit work stays bounded.
+    static func thin(_ points: [TrackPoint], maxPoints: Int) -> [TrackPoint] {
+        guard points.count > maxPoints, maxPoints >= 3 else {
+            return points.sorted { $0.timestamp < $1.timestamp }
+        }
+        let ordered = points.sorted { $0.timestamp < $1.timestamp }
+        let last = ordered.count - 1
+        let step = Double(last) / Double(maxPoints - 1)
+        var seen = Set<Int>()
+        var result: [TrackPoint] = []
+        result.reserveCapacity(maxPoints)
+        for index in 0..<maxPoints {
+            let source = min(last, Int((Double(index) * step).rounded()))
+            guard seen.insert(source).inserted else { continue }
+            result.append(ordered[source])
+        }
+        return result
+    }
+
+    /// Split a track into continuous observed runs (no gap bridges).
     static func segments(from points: [TrackPoint]) -> [[TrackPoint]] {
         let ordered = points.sorted { $0.timestamp < $1.timestamp }
         guard !ordered.isEmpty else { return [] }
@@ -13,8 +123,8 @@ enum TrackSmoother {
 
         for point in ordered {
             if let last,
-               point.timestamp.timeIntervalSince(last.timestamp) > 45
-                || Geo.distanceNM(point.coordinate, last.coordinate) > 1.5 {
+               point.timestamp.timeIntervalSince(last.timestamp) > gapThresholdSeconds
+                || Geo.distanceNM(point.coordinate, last.coordinate) > gapThresholdNM {
                 if current.count >= 2 { segments.append(current) }
                 current = [point]
             } else {

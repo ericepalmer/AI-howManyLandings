@@ -7,11 +7,14 @@ import csv
 import io
 import json
 import math
+import re
 import urllib.request
 from pathlib import Path
 
 AIRPORTS_URL = "https://davidmegginson.github.io/ourairports-data/airports.csv"
 RUNWAYS_URL = "https://davidmegginson.github.io/ourairports-data/runways.csv"
+# FAA NASR right-traffic runway ends, republished CC BY 4.0 from SkyReady.
+RIGHT_TRAFFIC_URL = "https://skyready.app/data/right-traffic-airports.csv"
 
 KEEP_TYPES = {
     "small_airport",
@@ -28,7 +31,7 @@ def fetch(url: str) -> str:
     cache = Path("/tmp/ourairports") / Path(url).name
     if cache.exists():
         return cache.read_text(encoding="utf-8", errors="replace")
-    req = urllib.request.Request(url, headers={"User-Agent": "HowManyLandings/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "HowManyLandings/1.0 (airport catalog)"})
     with urllib.request.urlopen(req, timeout=120) as resp:
         text = resp.read().decode("utf-8", errors="replace")
     cache.parent.mkdir(parents=True, exist_ok=True)
@@ -80,6 +83,36 @@ def is_icao_like(code: str) -> bool:
     return len(code) == 4 and code.isalpha()
 
 
+def normalize_runway_ident(ident: str) -> str:
+    ident = ident.strip().upper()
+    match = re.match(r"^0*(\d{1,2})([LCRWUE]?)$", ident)
+    if match:
+        return f"{int(match.group(1)):02d}{match.group(2)}"
+    return ident
+
+
+def load_right_traffic(text: str) -> tuple[dict[str, set[str]], set[str]]:
+    """Map airport ident → right-traffic runway ends. Also airports where every end is right."""
+    by_code: dict[str, set[str]] = {}
+    all_right: set[str] = set()
+    reader = csv.DictReader(io.StringIO(text))
+    for row in reader:
+        code = (row.get("code") or "").strip().upper()
+        if not code:
+            continue
+        ends = {
+            normalize_runway_ident(part)
+            for part in (row.get("right_traffic_runway_ends") or "").split()
+            if part.strip()
+        }
+        if ends:
+            by_code[code] = ends
+        flag = (row.get("all_ends_right_traffic") or "").strip().lower()
+        if flag in {"yes", "true", "1"}:
+            all_right.add(code)
+    return by_code, all_right
+
+
 def is_usable_code(code: str) -> bool:
     if not code:
         return False
@@ -98,6 +131,14 @@ def main() -> None:
     airports_csv = fetch(AIRPORTS_URL)
     print("Downloading runways.csv …")
     runways_csv = fetch(RUNWAYS_URL)
+    print("Downloading right-traffic runway ends …")
+    try:
+        right_csv = fetch(RIGHT_TRAFFIC_URL)
+        right_by_code, all_right_codes = load_right_traffic(right_csv)
+        print(f"  {len(right_by_code)} airports with published right traffic")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  skipped ({exc})")
+        right_by_code, all_right_codes = {}, set()
 
     by_ident: dict[str, dict] = {}
     aliases: dict[str, str] = {}
@@ -192,9 +233,47 @@ def main() -> None:
             }
         )
 
+    def right_ends_for(record: dict) -> tuple[set[str], bool]:
+        keys = {record["icao"], record.get("ident") or ""}
+        ends: set[str] = set()
+        all_right = False
+        for key in keys:
+            if not key:
+                continue
+            ends |= right_by_code.get(key, set())
+            if key in all_right_codes:
+                all_right = True
+            if len(key) == 3:
+                padded = f"K{key}"
+                ends |= right_by_code.get(padded, set())
+                if padded in all_right_codes:
+                    all_right = True
+        return ends, all_right
+
     airports = []
+    right_flags = 0
     for icao, record in sorted(by_ident.items()):
         runways = record["runways"][:8]
+        ends, all_right = right_ends_for(record)
+        packed = []
+        for rw in runways:
+            le_right = 1 if all_right or normalize_runway_ident(rw["le"]) in ends else 0
+            he_right = 1 if all_right or normalize_runway_ident(rw["he"]) in ends else 0
+            right_flags += le_right + he_right
+            packed.append(
+                [
+                    rw["le"],
+                    rw["he"],
+                    rw["hdg"],
+                    rw["lenFt"],
+                    rw["leLat"],
+                    rw["leLon"],
+                    rw["heLat"],
+                    rw["heLon"],
+                    le_right,
+                    he_right,
+                ]
+            )
         airports.append(
             [
                 icao,
@@ -203,10 +282,7 @@ def main() -> None:
                 record["lat"],
                 record["lon"],
                 record["elevFt"],
-                [
-                    [rw["le"], rw["he"], rw["hdg"], rw["lenFt"], rw["leLat"], rw["leLon"], rw["heLat"], rw["heLon"]]
-                    for rw in runways
-                ],
+                packed,
             ]
         )
 
@@ -214,6 +290,7 @@ def main() -> None:
     payload = {"airports": airports, "aliases": alias_pairs}
     dest.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
     print(f"Wrote {len(airports)} airports, {len(alias_pairs)} aliases -> {dest}")
+    print(f"Right-traffic runway ends flagged: {right_flags}")
     print(f"Size: {dest.stat().st_size / 1024:.0f} KB")
 
 

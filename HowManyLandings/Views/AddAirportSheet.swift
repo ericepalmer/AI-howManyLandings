@@ -8,6 +8,7 @@ struct AddAirportSheet: View {
     @Environment(TrackingEngine.self) private var engine
     @State private var query = ""
     @State private var errorMessage: String?
+    @FocusState private var queryFocused: Bool
 
     private var results: [Airport] {
         AirportCatalog.shared.search(query)
@@ -22,6 +23,7 @@ struct AddAirportSheet: View {
                         .textInputAutocapitalization(.characters)
                         #endif
                         .autocorrectionDisabled()
+                        .focused($queryFocused)
                         .onSubmit(addExact)
                 }
                 if !query.isEmpty {
@@ -80,6 +82,10 @@ struct AddAirportSheet: View {
                 Button("OK", role: .cancel) { errorMessage = nil }
             } message: {
                 Text(errorMessage ?? "")
+            }
+            .defaultFocus($queryFocused, true)
+            .onAppear {
+                queryFocused = true
             }
         }
         #if os(macOS)

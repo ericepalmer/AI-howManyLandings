@@ -54,6 +54,21 @@ final class AirportCatalog: Sendable {
         return nil
     }
 
+    /// Overlay FAA-published left/right flags from the bundled catalog.
+    /// Stored airports added before this data existed still decode as left-only.
+    func overlayPublishedPattern(on runways: [Runway], icao: String) -> [Runway] {
+        guard let catalog = airport(code: icao)?.runways, !catalog.isEmpty else { return runways }
+        return runways.map { runway in
+            guard let match = catalog.first(where: {
+                $0.leIdent == runway.leIdent && $0.heIdent == runway.heIdent
+            }) else { return runway }
+            var copy = runway
+            copy.leRightTraffic = match.leRightTraffic
+            copy.heRightTraffic = match.heRightTraffic
+            return copy
+        }
+    }
+
     func search(_ query: String, limit: Int = 40) -> [Airport] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return [] }
@@ -115,7 +130,9 @@ final class AirportCatalog: Sendable {
                         headingTrue: hdg,
                         lengthFt: len,
                         le: .init(latitude: leLat, longitude: leLon),
-                        he: .init(latitude: heLat, longitude: heLon)
+                        he: .init(latitude: heLat, longitude: heLon),
+                        leRightTraffic: rw.count > 8 ? (int(rw[8]) ?? 0) != 0 : false,
+                        heRightTraffic: rw.count > 9 ? (int(rw[9]) ?? 0) != 0 : false
                     )
                 )
             }

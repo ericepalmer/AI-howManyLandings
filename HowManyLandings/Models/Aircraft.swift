@@ -78,6 +78,14 @@ struct AircraftSnapshot: Identifiable, Hashable, Sendable {
         AircraftIdentity.registrationTail(icao24: icao24, registration: registration)
     }
 
+    /// Map label: callsign when ADS-B provides one, otherwise registration/tail.
+    var mapLabel: String {
+        if let callsign, let cleaned = AircraftIdentity.cleanedCallsign(callsign) {
+            return cleaned
+        }
+        return tailNumber
+    }
+
     var displayLabel: String {
         AircraftIdentity.displayLabel(callsign: callsign, registration: registration, icao24: icao24)
     }
@@ -108,7 +116,7 @@ struct AircraftSnapshot: Identifiable, Hashable, Sendable {
     }
 }
 
-struct TrackPoint: Hashable, Sendable {
+struct TrackPoint: Hashable, Sendable, Codable {
     var timestamp: Date
     var coordinate: CLLocationCoordinate2D
     var altitudeAGLFt: Double?
@@ -116,23 +124,90 @@ struct TrackPoint: Hashable, Sendable {
     var groundSpeedKt: Double?
     var trackDeg: Double?
     var verticalRateFPM: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case timestamp, latitude, longitude, altitudeAGLFt, onGround, groundSpeedKt, trackDeg, verticalRateFPM
+    }
+
+    init(
+        timestamp: Date,
+        coordinate: CLLocationCoordinate2D,
+        altitudeAGLFt: Double?,
+        onGround: Bool,
+        groundSpeedKt: Double?,
+        trackDeg: Double?,
+        verticalRateFPM: Double?
+    ) {
+        self.timestamp = timestamp
+        self.coordinate = coordinate
+        self.altitudeAGLFt = altitudeAGLFt
+        self.onGround = onGround
+        self.groundSpeedKt = groundSpeedKt
+        self.trackDeg = trackDeg
+        self.verticalRateFPM = verticalRateFPM
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        timestamp = try container.decode(Date.self, forKey: .timestamp)
+        coordinate = CLLocationCoordinate2D(
+            latitude: try container.decode(Double.self, forKey: .latitude),
+            longitude: try container.decode(Double.self, forKey: .longitude)
+        )
+        altitudeAGLFt = try container.decodeIfPresent(Double.self, forKey: .altitudeAGLFt)
+        onGround = try container.decode(Bool.self, forKey: .onGround)
+        groundSpeedKt = try container.decodeIfPresent(Double.self, forKey: .groundSpeedKt)
+        trackDeg = try container.decodeIfPresent(Double.self, forKey: .trackDeg)
+        verticalRateFPM = try container.decodeIfPresent(Double.self, forKey: .verticalRateFPM)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(timestamp, forKey: .timestamp)
+        try container.encode(coordinate.latitude, forKey: .latitude)
+        try container.encode(coordinate.longitude, forKey: .longitude)
+        try container.encodeIfPresent(altitudeAGLFt, forKey: .altitudeAGLFt)
+        try container.encode(onGround, forKey: .onGround)
+        try container.encodeIfPresent(groundSpeedKt, forKey: .groundSpeedKt)
+        try container.encodeIfPresent(trackDeg, forKey: .trackDeg)
+        try container.encodeIfPresent(verticalRateFPM, forKey: .verticalRateFPM)
+    }
+
+    /// Value copy so later in-place trims of the live trail cannot empty a saved landing.
+    func detached() -> TrackPoint {
+        TrackPoint(
+            timestamp: timestamp,
+            coordinate: CLLocationCoordinate2D(latitude: coordinate.latitude, longitude: coordinate.longitude),
+            altitudeAGLFt: altitudeAGLFt,
+            onGround: onGround,
+            groundSpeedKt: groundSpeedKt,
+            trackDeg: trackDeg,
+            verticalRateFPM: verticalRateFPM
+        )
+    }
+
+    static func detachedCopy(_ points: [TrackPoint]) -> [TrackPoint] {
+        points.map { $0.detached() }
+    }
 }
 
 enum TrafficEventKind: String, Codable, CaseIterable, Sendable {
     case touchAndGo
     case fullStop
     case takeoff
+    case taxiback
 
     var title: String {
         switch self {
         case .touchAndGo: return "Touch-and-go"
-        case .fullStop: return "Full-stop landing"
+        case .fullStop: return "Landing"
         case .takeoff: return "Takeoff"
+        case .taxiback: return "Taxiback"
         }
     }
 
     var countsAsLanding: Bool {
-        self == .touchAndGo || self == .fullStop
+        self == .touchAndGo || self == .fullStop || self == .taxiback
     }
 
     var systemImage: String {
@@ -140,6 +215,7 @@ enum TrafficEventKind: String, Codable, CaseIterable, Sendable {
         case .touchAndGo: return "arrow.uturn.up"
         case .fullStop: return "airplane.arrival"
         case .takeoff: return "airplane.departure"
+        case .taxiback: return "arrow.triangle.2.circlepath"
         }
     }
 }
