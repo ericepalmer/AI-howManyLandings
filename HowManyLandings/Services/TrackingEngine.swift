@@ -30,6 +30,9 @@ final class TrackingEngine {
     var adsLatestPoll: ADSFeedPoll?
     /// Rolling text log of incoming ADS-B polls.
     var adsLogLines: [String] = []
+    /// Accumulated ADS-B polls for the Display ADS window (cleared with Clear).
+    var adsSavedPolls: [ADSFeedPoll] = []
+    var adsSavedPollCount: Int { adsSavedPolls.count }
     /// Active landing runway direction per airport (`12`, not `12L`/`12R`).
     var activeRunwayByAirport: [String: String] = [:]
     /// Pattern occupancy time series per airport ICAO.
@@ -617,6 +620,13 @@ final class TrackingEngine {
     func clearADSFeed() {
         adsLatestPoll = nil
         adsLogLines = []
+        adsSavedPolls = []
+    }
+
+    func saveADSTrack(to url: URL, aircraftFilter: String = "") throws {
+        guard !adsSavedPolls.isEmpty else { throw ADSSavedTrackError.empty }
+        let data = try ADSSavedTrackExporter.export(polls: adsSavedPolls, aircraftFilter: aircraftFilter)
+        try data.write(to: url, options: .atomic)
     }
 
     private func recordADSFeed(
@@ -628,20 +638,18 @@ final class TrackingEngine {
         let rows = snapshots
             .map { ADSFeedRow(snapshot: $0, airport: airport) }
             .sorted { $0.distanceNM < $1.distanceNM }
-        adsLatestPoll = ADSFeedPoll(
+        let poll = ADSFeedPoll(
             id: UUID(),
             receivedAt: receivedAt,
             sourceName: sourceName,
             airportICAO: airport.icao,
             aircraft: rows
         )
+        adsLatestPoll = poll
+        adsSavedPolls.append(poll)
         let stamp = receivedAt.formatted(date: .omitted, time: .standard)
         adsLogLines.append("[\(stamp)] \(sourceName) \(airport.icao)  \(rows.count) aircraft")
         adsLogLines.append(contentsOf: rows.map { "  \($0.logLine)" })
-        let maxLines = 500
-        if adsLogLines.count > maxLines {
-            adsLogLines.removeFirst(adsLogLines.count - maxLines)
-        }
     }
 
     /// When engagement memory expires, drop saved tracks so log color swatches disappear.
@@ -739,6 +747,8 @@ enum AppSettings {
     static let trackingRadiusKey = "map.trackingRadiusNM"
     static let debugTrackDumpKey = "debug.trackDump"
     static let replaySpeedKey = "debug.replaySpeed"
+    /// Fraction of the ADS-B feed split given to the incoming log (bottom pane).
+    static let adsFeedLogFractionKey = "ads.feedLogFraction"
 
     static var feedSource: TrafficFeedSource {
         get { TrafficFeedSource(rawValue: UserDefaults.standard.string(forKey: feedSourceKey) ?? "") ?? .automatic }

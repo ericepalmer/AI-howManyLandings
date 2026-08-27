@@ -52,12 +52,84 @@ struct ADSFeedRow: Identifiable, Sendable, Hashable {
         let lon = String(format: "%.5f", longitude)
         return "\(icao24)  \(callsign.prefix(8))  \(typeCode.prefix(5))  gnd=\(gnd)  msl=\(msl)  agl=\(agl)  gs=\(gs)  hdg=\(hdg)  vs=\(vs)  \(nm)NM  \(lat) \(lon)"
     }
+
+    func matchesAircraftFilter(_ needle: String) -> Bool {
+        let q = needle.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return true }
+        return icao24.lowercased().contains(q)
+            || callsign.lowercased().contains(q)
+            || registration.lowercased().contains(q)
+    }
 }
 
-struct ADSFeedPoll: Identifiable, Sendable {
+extension ADSFeedRow: Codable {}
+
+struct ADSFeedPoll: Identifiable, Sendable, Hashable {
     var id: UUID
     var receivedAt: Date
     var sourceName: String
     var airportICAO: String
     var aircraft: [ADSFeedRow]
+
+    func filtered(by aircraftFilter: String) -> ADSFeedPoll {
+        var copy = self
+        copy.aircraft = aircraft.filter { $0.matchesAircraftFilter(aircraftFilter) }
+        return copy
+    }
+}
+
+extension ADSFeedPoll: Codable {}
+
+struct ADSSavedTrackExport: Codable, Sendable {
+    var exportedAt: Date
+    var airportICAO: String
+    var aircraftFilter: String?
+    var pollCount: Int
+    var polls: [ADSFeedPoll]
+    var filteredPolls: [ADSFeedPoll]?
+}
+
+enum ADSSavedTrackExporter {
+    static func export(
+        polls: [ADSFeedPoll],
+        aircraftFilter: String
+    ) throws -> Data {
+        guard let airportICAO = polls.last?.airportICAO ?? polls.first?.airportICAO else {
+            throw ADSSavedTrackError.empty
+        }
+        let trimmedFilter = aircraftFilter.trimmingCharacters(in: .whitespacesAndNewlines)
+        let filtered: [ADSFeedPoll]? = trimmedFilter.isEmpty
+            ? nil
+            : polls
+                .map { $0.filtered(by: trimmedFilter) }
+                .filter { !$0.aircraft.isEmpty }
+        let payload = ADSSavedTrackExport(
+            exportedAt: Date(),
+            airportICAO: airportICAO,
+            aircraftFilter: trimmedFilter.isEmpty ? nil : trimmedFilter,
+            pollCount: polls.count,
+            polls: polls,
+            filteredPolls: filtered
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(payload)
+    }
+
+    static func defaultFileName(airportICAO: String) -> String {
+        let stamp = ISO8601DateFormatter().string(from: Date())
+            .replacingOccurrences(of: ":", with: "")
+        return "\(airportICAO)_ADS_\(stamp).json"
+    }
+}
+
+enum ADSSavedTrackError: LocalizedError {
+    case empty
+
+    var errorDescription: String? {
+        switch self {
+        case .empty: return "No ADS-B polls have been saved yet."
+        }
+    }
 }

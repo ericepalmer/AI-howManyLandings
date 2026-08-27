@@ -84,6 +84,8 @@ enum PatternClassifier {
     /// Field distance for active-runway downwind (covers extended legs).
     private static let activeDownwindMaxFieldNM = 3.5
     private static let leavingFieldNM = 2.2
+    /// Climb-out turn may briefly show Maneuvering before Crosswind geometry matches.
+    private static let recentTakeoffSeconds: TimeInterval = 600
     private static let alignTol = 22.0
     private static let perpTol = 28.0
     private static let runwayHeadingTol = 28.0
@@ -162,7 +164,8 @@ enum PatternClassifier {
         state.phase = next.0
         if let ident = next.1 {
             state.runwayIdent = RunwayApproach.directionIdent(ident)
-        } else if next.0 == .maneuvering {
+        } else if next.0 == .maneuvering,
+                  !isRecentTakeoff(lastTakeoffAt: lastTakeoffAt, now: now) {
             state.runwayIdent = nil
         }
         if state.phase == .crosswind || state.phase == .downwind {
@@ -237,10 +240,25 @@ enum PatternClassifier {
         // MARK: Sequential — Departure → Upwind → Crosswind → Downwind.
 
         // Crosswind after Departure / Upwind (or while already on Crosswind).
-        if previous == .departure || previous == .upwind || previous == .crosswind,
-           let patternChosen,
-           isCrosswind(chosen: patternChosen, point: point, heading: heading, agl: agl, distanceNM: distanceNM) {
-            return (.crosswind, patternChosen.directionIdent)
+        // After a recent takeoff, also accept Crosswind from a brief Maneuvering
+        // chip during the climb-out turn (heading leaves the upwind corridor first).
+        let sequentialCrosswind = previous == .departure || previous == .upwind || previous == .crosswind
+        let climbOutCrosswind = previous == .maneuvering
+            && isRecentTakeoff(lastTakeoffAt: lastTakeoffAt, now: now)
+        if sequentialCrosswind || climbOutCrosswind,
+           let crosswind = matchingCrosswind(
+            candidates: crosswindCandidates(
+                patternChosen: patternChosen,
+                anyChosen: anyChosen,
+                activeRunwayDirection: activeRunwayDirection,
+                approaches: approaches
+            ),
+            point: point,
+            heading: heading,
+            agl: agl,
+            distanceNM: distanceNM
+           ) {
+            return (.crosswind, crosswind.directionIdent)
         }
 
         if sawCrosswind,
@@ -398,6 +416,53 @@ enum PatternClassifier {
         }
         // Above 1,250 AGL in the corridor → Maneuvering.
         return nil
+    }
+
+    private static func isRecentTakeoff(lastTakeoffAt: Date?, now: Date) -> Bool {
+        guard let lastTakeoffAt else { return false }
+        return now.timeIntervalSince(lastTakeoffAt) <= recentTakeoffSeconds
+    }
+
+    /// Active-runway parallels first; otherwise the best-matching approach for this point.
+    private static func crosswindCandidates(
+        patternChosen: RunwayApproach?,
+        anyChosen: RunwayApproach?,
+        activeRunwayDirection: String?,
+        approaches: [RunwayApproach]
+    ) -> [RunwayApproach] {
+        if let activeRunwayDirection {
+            let active = approaches.filter { $0.directionIdent == activeRunwayDirection }
+            if !active.isEmpty { return active }
+        }
+        if let patternChosen { return [patternChosen] }
+        if let anyChosen { return [anyChosen] }
+        return []
+    }
+
+    private static func matchingCrosswind(
+        candidates: [RunwayApproach],
+        point: CLLocationCoordinate2D,
+        heading: Double?,
+        agl: Double?,
+        distanceNM: Double
+    ) -> RunwayApproach? {
+        var best: RunwayApproach?
+        var bestScore = -1.0
+        for approach in candidates {
+            guard isCrosswind(
+                chosen: approach,
+                point: point,
+                heading: heading,
+                agl: agl,
+                distanceNM: distanceNM
+            ) else { continue }
+            let score = 8.0 / (1 + approach.distanceToRunwayNM(from: point) * 2)
+            if score > bestScore {
+                bestScore = score
+                best = approach
+            }
+        }
+        return best
     }
 
     private static func isCrosswind(

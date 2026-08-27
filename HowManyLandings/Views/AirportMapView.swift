@@ -541,6 +541,7 @@ private struct AircraftMarker: View {
         let heading = snapshot.trackDeg ?? 0
         let baseColor = isHigh ? TrackPalette.enroute : color
         let symbolColor = isInspected ? TrackPalette.emphasized(baseColor) : baseColor
+        let labelColor = isInspected ? TrackPalette.emphasized(color) : color
         let opacity = aircraft.isCoasting ? 0.55 : 1.0
         VStack(spacing: 2) {
             if isHigh {
@@ -559,7 +560,7 @@ private struct AircraftMarker: View {
             }
             Text(snapshot.mapLabel)
                 .font(.caption2.monospaced().weight(.semibold))
-                .foregroundStyle(symbolColor)
+                .foregroundStyle(labelColor)
                 .padding(.horizontal, 4)
                 .padding(.vertical, 1)
                 .background(.ultraThinMaterial, in: Capsule())

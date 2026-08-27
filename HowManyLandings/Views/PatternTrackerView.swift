@@ -126,6 +126,7 @@ private struct PatternTrackerCard: View {
                         )
                         Text(snapshot.mapLabel)
                             .font(.subheadline.weight(.semibold).monospaced())
+                            .foregroundStyle(color)
                             .lineLimit(1)
                         if aircraft.isCoasting {
                             Text("Lost")

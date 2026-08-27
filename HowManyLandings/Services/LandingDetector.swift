@@ -365,6 +365,13 @@ struct LandingDetector: Sendable {
         memory.groundInferred = false
         memory.pattern.phase = .departure
         memory.pattern.sawCrosswind = false
+        if let direction = landingRunwayDirection(
+            coordinate: snapshot.coordinate,
+            heading: snapshot.trackDeg,
+            airport: airport
+        ) {
+            activeRunwayDirection = direction
+        }
         return OutputEvent(
             eventID: UUID(),
             kind: .takeoff,
