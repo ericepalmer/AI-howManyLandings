@@ -98,14 +98,23 @@ struct LandingDetector: Sendable {
             return asOf.timeIntervalSince(lastLandingAt) <= LandingDetector.postLandingTrailVisible
         }
 
+        /// On the surface after a landing, still inside the post-landing window.
+        var isRecentlyLandedForTracker: Bool {
+            guard isPostLandingTrail else { return false }
+            return snapshot.onGround
+                || flightState?.isGround == true
+                || patternPhase == .ground
+        }
+
         /// Draw a trail when we have points; the map chooses the time window.
         var shouldDrawTrail: Bool {
             track.count >= 2
         }
 
-        /// Pattern tracker: airborne in-pattern only. Surface ops and post-landing
-        /// contacts stay off the list; lost airborne contacts stay ≤ 5 minutes.
+        /// Pattern tracker: airborne in-pattern, plus recently landed (5 min).
+        /// Lost airborne contacts stay ≤ 5 minutes.
         var appearsInTracker: Bool {
+            if isRecentlyLandedForTracker { return true }
             if snapshot.onGround { return false }
             if flightState?.isGround == true { return false }
             if patternPhase == .ground { return false }
