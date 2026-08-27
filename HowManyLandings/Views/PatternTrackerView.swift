@@ -8,6 +8,7 @@ struct PatternTrackerView: View {
     var onDump: ((LandingDetector.TrackedAircraft) -> Void)?
     var onPlanePicked: (() -> Void)?
     var onShowADS: (() -> Void)?
+    var onShowOccupancy: (() -> Void)?
 
     private var tracked: [LandingDetector.TrackedAircraft] {
         aircraft
@@ -50,7 +51,7 @@ struct PatternTrackerView: View {
                                     airport: airport,
                                     color: TrackPalette.swatch(for: ac.id),
                                     isSelected: selectedICAO24 == ac.id,
-                                    now: timeline.date,
+                                    now: ac.asOf,
                                 onSelect: {
                                     onPlanePicked?()
                                     if selectedICAO24 == ac.id {
@@ -71,12 +72,21 @@ struct PatternTrackerView: View {
 
             Divider()
 
-            Button("Display ADS") {
-                onShowADS?()
+            VStack(spacing: 8) {
+                Button("Pattern graph") {
+                    onShowOccupancy?()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .frame(maxWidth: .infinity)
+
+                Button("Display ADS") {
+                    onShowADS?()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .frame(maxWidth: .infinity)
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
         }
@@ -191,7 +201,7 @@ private struct PatternTrackerCard: View {
             return TrackPalette.ground
         case .maneuvering, .leaving:
             return .secondary
-        case .departure, .crosswind, .downwind:
+        case .departure, .upwind, .crosswind, .downwind:
             return .cyan
         case .base, .final, .flare:
             return .orange

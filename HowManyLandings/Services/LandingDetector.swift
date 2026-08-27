@@ -81,6 +81,8 @@ struct LandingDetector: Sendable {
         /// Inferred traffic-pattern leg; `.maneuvering` until geometry is unambiguous.
         var patternPhase: PatternPhase = .maneuvering
         var patternRunwayIdent: String?
+        /// Clock used for visibility / coast windows (wall time live; poll time during replay).
+        var asOf: Date = Date()
 
         /// Chip next to the callsign (`Ground`, `Base 27`, `Final 09`, `Maneuvering`, …).
         var patternChipText: String? {
@@ -93,7 +95,7 @@ struct LandingDetector: Sendable {
         /// Landing trail still in the post-landing display window.
         var isPostLandingTrail: Bool {
             guard let lastLandingAt else { return false }
-            return Date().timeIntervalSince(lastLandingAt) <= LandingDetector.postLandingTrailVisible
+            return asOf.timeIntervalSince(lastLandingAt) <= LandingDetector.postLandingTrailVisible
         }
 
         /// Draw a trail when we have points; the map chooses the time window.
@@ -110,7 +112,7 @@ struct LandingDetector: Sendable {
             if lastLandingAt != nil, isCoasting { return false }
             guard inPattern else { return false }
             if inRange { return true }
-            return Date().timeIntervalSince(lastSeen) <= Geo.trackerCoastSeconds
+            return asOf.timeIntervalSince(lastSeen) <= Geo.trackerCoastSeconds
         }
 
         /// On-ground and in-range aircraft always show; coasting uses short windows.
@@ -119,7 +121,7 @@ struct LandingDetector: Sendable {
             if appearsInTracker { return true }
             if isCoasting, lastLandingAt != nil { return isPostLandingTrail }
             if isCoasting {
-                return Date().timeIntervalSince(lastSeen) <= 90
+                return asOf.timeIntervalSince(lastSeen) <= 90
             }
             return true
         }
@@ -266,7 +268,8 @@ struct LandingDetector: Sendable {
                 distanceNM: distance,
                 inPattern: inPattern,
                 patternPhase: memory.pattern.phase,
-                patternRunwayIdent: memory.pattern.runwayIdent
+                patternRunwayIdent: memory.pattern.runwayIdent,
+                asOf: now
             )
         }
         .sorted { $0.snapshot.displayLabel < $1.snapshot.displayLabel }

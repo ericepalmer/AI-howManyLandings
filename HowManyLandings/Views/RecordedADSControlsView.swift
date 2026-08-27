@@ -1,39 +1,31 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct RecordedADSControlsView: View {
     @Environment(TrackingEngine.self) private var engine
-    @AppStorage(AppSettings.replaySpeedKey) private var replaySpeed = 1.0
     @State private var showFilePicker = false
     @State private var loadError: String?
 
     var body: some View {
         Button("Choose ADS-B file…") {
-            showFilePicker = true
-        }
-        .fileImporter(
-            isPresented: $showFilePicker,
-            allowedContentTypes: [.json, .plainText, .text],
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let urls):
-                guard let url = urls.first else { return }
-                do {
-                    try engine.loadRecordedFile(from: url)
-                    loadError = nil
-                } catch {
-                    loadError = error.localizedDescription
-                }
-            case .failure(let error):
+            #if os(macOS)
+            loadError = nil
+            guard let url = RecordedADSFilePicker.chooseFile() else { return }
+            do {
+                try RecordedADSFilePicker.load(from: url, engine: engine)
+            } catch {
                 loadError = error.localizedDescription
             }
+            #else
+            showFilePicker = true
+            #endif
         }
+        .modifier(RecordedADSFileImporter(isPresented: $showFilePicker, onError: { loadError = $0 }))
 
         if let loadError {
             Text(loadError)
                 .font(.caption)
                 .foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
         }
 
         if engine.isRecordedReplayActive {
@@ -42,29 +34,14 @@ struct RecordedADSControlsView: View {
                 LabeledContent("Format", value: format)
             }
             LabeledContent("Progress") {
-                if engine.recordedReplayFinished {
-                    Text("Finished · \(engine.recordedPollIndex)/\(engine.recordedPollCount)")
-                } else {
-                    Text("\(engine.recordedPollIndex)/\(engine.recordedPollCount) polls")
-                }
+                Text("\(engine.recordedPollIndex)/\(engine.recordedPollCount)")
             }
-            Picker("Replay speed", selection: $replaySpeed) {
-                Text("Real time").tag(1.0)
-                Text("2×").tag(2.0)
-                Text("5×").tag(5.0)
-                Text("10×").tag(10.0)
-                Text("Instant").tag(100.0)
-            }
-            .onChange(of: replaySpeed) { _, newValue in
-                AppSettings.replaySpeedMultiplier = newValue
-            }
-            HStack {
-                Button("Restart") {
-                    engine.restartRecordedReplay()
-                }
-                Button("Stop replay", role: .destructive) {
-                    engine.stopRecordedReplay()
-                }
+            Text("Use the floating replay palette on the map for play, speed, and stepping.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Stop replay", role: .destructive) {
+                engine.stopRecordedReplay()
             }
         }
     }

@@ -4,7 +4,7 @@ import Foundation
 /// Where an aircraft sits in this field’s traffic pattern.
 ///
 /// Two independent kinds of labels:
-/// - **Sequential** (status + profile): Departure → Crosswind → Downwind.
+/// - **Sequential** (status + profile): Departure → Upwind → Crosswind → Downwind.
 ///   Each step needs the previous status *and* the matching flight profile.
 ///   A 360, a messy pattern, or an ADS-B gap will not invent these.
 /// - **Profile-only**: Base, Final, Flare. These depend only on heading,
@@ -15,6 +15,7 @@ enum PatternPhase: String, Sendable, Equatable {
     case ground
     case maneuvering
     case departure
+    case upwind
     case crosswind
     case downwind
     case base
@@ -27,6 +28,7 @@ enum PatternPhase: String, Sendable, Equatable {
         case .ground: return "Ground"
         case .maneuvering: return "Maneuvering"
         case .departure: return "Departure"
+        case .upwind: return "Upwind"
         case .crosswind: return "Crosswind"
         case .downwind: return "Downwind"
         case .base: return "Base"
@@ -70,6 +72,11 @@ enum PatternClassifier {
     private static let baseMaxAGLFt = 1_000.0
     private static let downwindMinNM = 0.3
     private static let downwindMaxNM = 1.5
+    /// Departure: runway heading, departure side, within this lateral distance, AGL below band.
+    private static let departureLateralMaxNM = 0.5
+    private static let departureMaxAGLFt = 500.0
+    /// Upwind: same corridor as departure, AGL from 500 through 1,250.
+    private static let upwindMaxAGLFt = 1_250.0
     /// Typical piston pattern altitude (AGL). Active-runway downwind uses ± band below.
     private static let patternAltitudeAGLFt = 1_000.0
     private static let patternAltitudeAboveFt = 300.0
@@ -79,6 +86,7 @@ enum PatternClassifier {
     private static let leavingFieldNM = 2.2
     private static let alignTol = 22.0
     private static let perpTol = 28.0
+    private static let runwayHeadingTol = 28.0
 
     /// - Parameter activeRunwayDirection: Field-wide active landing direction (`12`, not `12L`).
     ///   Crosswind / downwind / base use this. Final / flare use any runway and can change it.
@@ -163,7 +171,8 @@ enum PatternClassifier {
         if state.phase == .leaving {
             state.sawCrosswind = false
         }
-        if state.phase == .departure, previous == .flare || previous == .final || previous == .maneuvering {
+        if (state.phase == .departure || state.phase == .upwind),
+           previous == .flare || previous == .final || previous == .maneuvering || previous == .ground {
             state.sawCrosswind = false
         }
 
@@ -200,8 +209,6 @@ enum PatternClassifier {
         activeRunwayDirection: String?,
         approaches: [RunwayApproach]
     ) -> (PatternPhase, String?) {
-        let recentTakeoff = lastTakeoffAt.map { now.timeIntervalSince($0) < 120 } ?? false
-        let climbing = (vs ?? 0) > 200
         let patternChosen = chosenActive
         let anyChosen = chosenAny
 
@@ -214,7 +221,7 @@ enum PatternClassifier {
             return (.final, anyChosen.directionIdent)
         }
 
-        // MARK: Base / Crosswind / Downwind — locked to active runway direction.
+        // MARK: Base — locked to active runway direction.
         if let patternChosen, isBase(
             chosen: patternChosen,
             point: point,
@@ -227,19 +234,10 @@ enum PatternClassifier {
             return (.base, patternChosen.directionIdent)
         }
 
-        // MARK: Sequential — Departure → Crosswind → Downwind (status + profile).
+        // MARK: Sequential — Departure → Upwind → Crosswind → Downwind.
 
-        // Touch-and-go / go-around: was Flare/Final, now climbing on runway heading.
-        if (previous == .flare || previous == .final),
-           climbing,
-           let anyChosen,
-           let heading,
-           Geo.isAbout(heading, anyChosen.headingDeg, tolerance: 30),
-           (agl ?? 0) > flareAGLFt {
-            return (.departure, anyChosen.directionIdent)
-        }
-
-        if previous == .departure || previous == .crosswind,
+        // Crosswind after Departure / Upwind (or while already on Crosswind).
+        if previous == .departure || previous == .upwind || previous == .crosswind,
            let patternChosen,
            isCrosswind(chosen: patternChosen, point: point, heading: heading, agl: agl, distanceNM: distanceNM) {
             return (.crosswind, patternChosen.directionIdent)
@@ -264,27 +262,18 @@ enum PatternClassifier {
             return (.downwind, activeDW.directionIdent)
         }
 
-        // Departure needs takeoff (or go-around) status, not climb-out geometry alone.
-        if previous != .crosswind, previous != .downwind {
-            if recentTakeoff {
-                let ident = anyChosen?.directionIdent
-                    ?? activeRunwayDirection
-                    ?? approaches.first.map(\.directionIdent)
-                return (.departure, ident)
-            }
-            if previous == .departure, isDeparture(
-                chosen: anyChosen,
+        // Departure / Upwind corridor: runway heading, departure side, ≤ 0.5 NM.
+        // AGL < 500 → Departure; 500…1250 → Upwind; above that or outside → Maneuvering
+        // (unless Crosswind already matched above).
+        if previous != .crosswind, previous != .downwind, previous != .base {
+            let corridorChosen = patternChosen ?? anyChosen
+            if let phase = departureOrUpwind(
+                chosen: corridorChosen,
                 point: point,
                 heading: heading,
-                agl: agl,
-                vs: vs,
-                speed: speed,
-                recentTakeoff: false
+                agl: agl
             ) {
-                let ident = anyChosen?.directionIdent
-                    ?? activeRunwayDirection
-                    ?? approaches.first.map(\.directionIdent)
-                return (.departure, ident)
+                return phase
             }
         }
 
@@ -386,25 +375,29 @@ enum PatternClassifier {
         return true
     }
 
-    private static func isDeparture(
+    /// Runway-heading climb-out on the departure side within ½ NM.
+    /// AGL < 500 → Departure; 500…1250 → Upwind; above 1250 or outside corridor → nil (Maneuvering).
+    private static func departureOrUpwind(
         chosen: RunwayApproach?,
         point: CLLocationCoordinate2D,
         heading: Double?,
-        agl: Double?,
-        vs: Double?,
-        speed: Double?,
-        recentTakeoff: Bool
-    ) -> Bool {
-        guard let chosen, let heading else { return recentTakeoff }
-        guard Geo.isAbout(heading, chosen.headingDeg, tolerance: 30) else { return recentTakeoff }
+        agl: Double?
+    ) -> (PatternPhase, String?)? {
+        guard let chosen, let heading, let agl, agl >= 0 else { return nil }
+        guard Geo.isAbout(heading, chosen.headingDeg, tolerance: runwayHeadingTol) else { return nil }
+        let lateral = chosen.distanceToRunwayNM(from: point)
+        guard lateral <= departureLateralMaxNM else { return nil }
         let frame = chosen.frame(at: point)
-        let near = chosen.distanceToRunwayNM(from: point) < 0.6 || abs(frame.crossRight) < 0.25
-        guard near else { return recentTakeoff }
-        guard frame.along > -0.15 else { return recentTakeoff }
-        if recentTakeoff { return true }
-        let climbing = (vs ?? 0) > 150 || (agl ?? 0) < 800
-        let moving = (speed ?? 0) > 35
-        return climbing && moving && (agl ?? 0) < 1_500
+        // Departure / upwind side: past the landing threshold along runway heading (not on final).
+        guard frame.along > -0.1 else { return nil }
+        if agl < departureMaxAGLFt {
+            return (.departure, chosen.directionIdent)
+        }
+        if agl <= upwindMaxAGLFt {
+            return (.upwind, chosen.directionIdent)
+        }
+        // Above 1,250 AGL in the corridor → Maneuvering.
+        return nil
     }
 
     private static func isCrosswind(
@@ -528,7 +521,7 @@ enum PatternClassifier {
         let headingAway = heading.map { Geo.isAbout($0, bearingFromField, tolerance: 55) } ?? false
         let stretching = previousDistanceNM.map { distanceNM > $0 + 0.08 } ?? false
         if distanceNM > leavingFieldNM, headingAway { return true }
-        if distanceNM > 1.8, headingAway, stretching, previous == .departure || previous == .leaving {
+        if distanceNM > 1.8, headingAway, stretching, previous == .departure || previous == .upwind || previous == .leaving {
             return true
         }
         if previous == .downwind, let chosen {
@@ -554,12 +547,16 @@ enum PatternClassifier {
         switch phase {
         case .ground, .maneuvering:
             return false
-        case .departure:
-            guard let chosen, let heading else { return distanceNM < 2.0 }
-            return Geo.isAbout(heading, chosen.headingDeg, tolerance: 35)
-                && distanceNM < 2.4
-                && (agl ?? 0) < 1_900
-                && !Geo.isPerpendicular(heading, to: chosen.headingDeg, tolerance: 22)
+        case .departure, .upwind:
+            // Hold only while still in the same altitude band of the departure corridor.
+            // Outside ½ NM (and not Crosswind — checked earlier) falls through to Maneuvering.
+            guard let match = departureOrUpwind(
+                chosen: chosen,
+                point: point,
+                heading: heading,
+                agl: agl
+            ) else { return false }
+            return match.0 == phase
         case .crosswind:
             guard let chosen, let heading else { return false }
             return Geo.isPerpendicular(heading, to: chosen.headingDeg, tolerance: 35)

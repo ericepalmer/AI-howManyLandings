@@ -32,6 +32,8 @@ final class TrackingEngine {
     var adsLogLines: [String] = []
     /// Active landing runway direction per airport (`12`, not `12L`/`12R`).
     var activeRunwayByAirport: [String: String] = [:]
+    /// Pattern occupancy time series per airport ICAO.
+    var patternOccupancyByAirport: [String: [PatternOccupancySample]] = [:]
     /// Loaded recording file name, when replaying saved ADS-B data.
     var recordedReplayFileName: String?
     /// Current poll index during file replay (0…count).
@@ -42,6 +44,22 @@ final class TrackingEngine {
     var recordedFormatDescription: String?
     var isRecordedReplayActive: Bool { recording != nil && AppSettings.feedSource == .recorded }
     var recordedReplayFinished: Bool = false
+    /// When false, recorded replay waits for Play or a step.
+    var isRecordedReplayPlaying: Bool = false
+    /// Wall clock live; latest applied recording poll time during replay (for logs / hour stats).
+    var simulationNow: Date {
+        if AppSettings.feedSource == .recorded, let recording, !recording.polls.isEmpty {
+            if recordedPollIndex > 0 {
+                return recording.polls[min(recordedPollIndex, recording.polls.count) - 1].time
+            }
+            return recording.polls[0].time
+        }
+        return Date()
+    }
+    /// First poll timestamp of the loaded recording, if any.
+    var recordedReplayOrigin: Date? {
+        recording?.polls.first?.time
+    }
 
     @ObservationIgnored
     private var detectors: [String: LandingDetector] = [:]
@@ -55,6 +73,9 @@ final class TrackingEngine {
     private var recording: ADSRecordingManifest?
     @ObservationIgnored
     private var recordingAccessURL: URL?
+    /// Forces the next recorded `pollOnce` to advance one poll even while paused.
+    @ObservationIgnored
+    private var recordedStepForwardPending = false
 
     func attach(modelContext: ModelContext) {
         self.modelContext = modelContext
@@ -74,6 +95,7 @@ final class TrackingEngine {
         aircraftByAirport = aircraftByAirport.filter { tracked.contains($0.key) }
         liveAirportICAOs = liveAirportICAOs.intersection(tracked)
         activeRunwayByAirport = activeRunwayByAirport.filter { tracked.contains($0.key) }
+        patternOccupancyByAirport = patternOccupancyByAirport.filter { tracked.contains($0.key) }
 
         if selectedICAO == nil {
             selectedICAO = airports.first?.icao
@@ -124,19 +146,19 @@ final class TrackingEngine {
 
     private func nextDelay() -> TimeInterval {
         if AppSettings.feedSource == .recorded, let recording, !recording.polls.isEmpty {
-            if recordedReplayFinished {
-                return AppSettings.pollIntervalSeconds
+            if recordedReplayFinished || !isRecordedReplayPlaying {
+                return 0.25
             }
             let nextIndex = recordedPollIndex
             guard nextIndex < recording.polls.count else {
-                return AppSettings.pollIntervalSeconds
+                return 0.25
             }
             if nextIndex == 0 {
-                return 0.25
+                return 0.05
             }
             let prev = recording.polls[nextIndex - 1].time
             let next = recording.polls[nextIndex].time
-            let delta = max(0.1, next.timeIntervalSince(prev))
+            let delta = max(0.05, next.timeIntervalSince(prev))
             return delta / AppSettings.replaySpeedMultiplier
         }
         if case .rateLimited(let retry) = lastRateLimit {
@@ -171,8 +193,17 @@ final class TrackingEngine {
         var recordedPoll: ADSRecordedPoll?
         if AppSettings.feedSource == .recorded {
             if recordedReplayFinished {
+                isRecordedReplayPlaying = false
                 lastUpdated = Date()
                 statusText = "Recording finished · \(recordedPollIndex)/\(recordedPollCount) polls"
+                return
+            }
+            let shouldAdvance = isRecordedReplayPlaying || recordedStepForwardPending
+            recordedStepForwardPending = false
+            if !shouldAdvance {
+                lastUpdated = Date()
+                let progress = "\(recordedPollIndex)/\(recordedPollCount)"
+                statusText = "Paused · \(recordedReplayFileName ?? "recording") · \(progress)"
                 return
             }
             if let selected = selectedAirport(from: airports) {
@@ -184,6 +215,7 @@ final class TrackingEngine {
                 recordedPoll = try takeNextRecordedPoll()
                 if recordedPollIndex >= recordedPollCount {
                     recordedReplayFinished = true
+                    isRecordedReplayPlaying = false
                 }
                 usedName = recordedReplayFileName.map { "Recorded · \($0)" } ?? "Recorded ADS-B"
             } catch let error as ADSRecordingError {
@@ -229,6 +261,11 @@ final class TrackingEngine {
                 if let active = detector.activeRunwayDirection {
                     activeRunwayByAirport[airport.icao] = active
                 }
+                recordPatternOccupancy(
+                    airportICAO: airport.icao,
+                    aircraft: output.aircraft,
+                    at: fetched.result.serverTime
+                )
                 if airport.icao == selectedICAO {
                     totalAircraft = output.aircraft.filter(\.inRange).count
                 }
@@ -294,14 +331,20 @@ final class TrackingEngine {
         recordedPollCount = manifest.polls.count
         recordedPollIndex = 0
         recordedReplayFinished = false
+        isRecordedReplayPlaying = false
+        recordedStepForwardPending = false
         AppSettings.feedSource = .recorded
         if let suggested = manifest.suggestedAirportICAO {
             selectedICAO = suggested
         }
         resetReplayDetectors(clearEvents: true)
         clearADSFeed()
+        // Avoid the live-connection overlay while scrubbing a recording.
+        if let selectedICAO {
+            liveAirportICAOs.insert(selectedICAO)
+        }
         feedName = "Recorded ADS-B"
-        statusText = "Replay ready · \(manifest.fileName) · \(manifest.polls.count) polls"
+        statusText = "Paused · \(manifest.fileName) · 0/\(manifest.polls.count)"
         if pollTask == nil, !knownAirports.isEmpty {
             isPolling = true
             pollTask = Task { [weak self] in
@@ -311,18 +354,59 @@ final class TrackingEngine {
                     try? await Task.sleep(for: .seconds(delay))
                 }
             }
-        } else {
-            Task { await pollOnce() }
         }
     }
 
-    func restartRecordedReplay() {
+    func setRecordedReplayPlaying(_ playing: Bool) {
+        guard isRecordedReplayActive else { return }
+        if playing, recordedReplayFinished {
+            restartRecordedReplay(autoplay: true)
+            return
+        }
+        isRecordedReplayPlaying = playing
+        if playing {
+            statusText = "Replay · \(recordedReplayFileName ?? "recording") · \(recordedPollIndex)/\(recordedPollCount)"
+            Task { await pollOnce() }
+        } else {
+            statusText = "Paused · \(recordedReplayFileName ?? "recording") · \(recordedPollIndex)/\(recordedPollCount)"
+        }
+    }
+
+    func toggleRecordedReplayPlaying() {
+        setRecordedReplayPlaying(!isRecordedReplayPlaying)
+    }
+
+    func stepRecordedReplayForward() {
+        guard isRecordedReplayActive, !recordedReplayFinished else { return }
+        isRecordedReplayPlaying = false
+        recordedStepForwardPending = true
+        Task { await pollOnce() }
+    }
+
+    func stepRecordedReplayBackward() {
+        guard isRecordedReplayActive, recordedPollIndex > 0 else { return }
+        isRecordedReplayPlaying = false
+        let target = recordedPollIndex - 1
+        Task { await seekRecordedReplay(to: target) }
+    }
+
+    func restartRecordedReplay(autoplay: Bool = false) {
         guard recording != nil else { return }
         recordedPollIndex = 0
         recordedReplayFinished = false
+        recordedStepForwardPending = false
+        isRecordedReplayPlaying = autoplay
         resetReplayDetectors(clearEvents: true)
         clearADSFeed()
-        Task { await pollOnce() }
+        if let selectedICAO {
+            liveAirportICAOs.insert(selectedICAO)
+        }
+        statusText = autoplay
+            ? "Replay · \(recordedReplayFileName ?? "recording") · 0/\(recordedPollCount)"
+            : "Paused · \(recordedReplayFileName ?? "recording") · 0/\(recordedPollCount)"
+        if autoplay {
+            Task { await pollOnce() }
+        }
     }
 
     func stopRecordedReplay(restoreLiveSource: TrafficFeedSource = .automatic) {
@@ -333,12 +417,72 @@ final class TrackingEngine {
         recordedPollCount = 0
         recordedPollIndex = 0
         recordedReplayFinished = false
+        isRecordedReplayPlaying = false
+        recordedStepForwardPending = false
         if AppSettings.feedSource == .recorded {
             AppSettings.feedSource = restoreLiveSource
         }
         resetReplayDetectors(clearEvents: false)
         statusText = "Live traffic · \(AppSettings.feedSource.title)"
         Task { await pollOnce() }
+    }
+
+    /// Rebuild detector state by replaying polls `[0, targetIndex)`.
+    private func seekRecordedReplay(to targetIndex: Int) async {
+        guard let recording, isRecordedReplayActive else { return }
+        let clamped = max(0, min(targetIndex, recording.polls.count))
+        resetReplayDetectors(clearEvents: true)
+        clearADSFeed()
+        recordedPollIndex = 0
+        recordedReplayFinished = false
+        recordedStepForwardPending = false
+
+        guard let airport = selectedAirport(from: knownAirports) else {
+            statusText = "Paused · \(recordedReplayFileName ?? "recording") · 0/\(recordedPollCount)"
+            return
+        }
+        liveAirportICAOs.insert(airport.icao)
+
+        var detector = LandingDetector()
+        var lastAircraft: [LandingDetector.TrackedAircraft] = []
+        for index in 0..<clamped {
+            if Task.isCancelled { return }
+            let poll = recording.polls[index]
+            recordADSFeed(
+                snapshots: poll.snapshots,
+                airport: airport,
+                sourceName: recordedReplayFileName.map { "Recorded · \($0)" } ?? "Recorded ADS-B",
+                receivedAt: poll.time
+            )
+            let output = detector.ingest(
+                snapshots: poll.snapshots,
+                airport: airport,
+                trackingRadiusNM: AppSettings.trackingRadiusNM,
+                now: poll.time
+            )
+            lastAircraft = output.aircraft
+            recordPatternOccupancy(
+                airportICAO: airport.icao,
+                aircraft: output.aircraft,
+                at: poll.time
+            )
+            persist(output.events, airport: airport)
+            clearExpiredTracks(icao24s: output.purgedICAO24s, airportICAO: airport.icao)
+        }
+
+        detectors[airport.icao] = detector
+        aircraftByAirport[airport.icao] = lastAircraft
+        if let active = detector.activeRunwayDirection {
+            activeRunwayByAirport[airport.icao] = active
+        } else {
+            activeRunwayByAirport.removeValue(forKey: airport.icao)
+        }
+        recordedPollIndex = clamped
+        recordedReplayFinished = clamped >= recording.polls.count
+        lastAircraftCount = lastAircraft.filter(\.inRange).count
+        lastUpdated = Date()
+        lastError = nil
+        statusText = "Paused · \(recordedReplayFileName ?? "recording") · \(recordedPollIndex)/\(recordedPollCount)"
     }
 
     private func stopRecordingAccess() {
@@ -353,12 +497,45 @@ final class TrackingEngine {
             detectors[icao] = LandingDetector()
             aircraftByAirport[icao] = []
             activeRunwayByAirport.removeValue(forKey: icao)
+            patternOccupancyByAirport[icao] = []
         }
         selectedTrackerICAO24 = nil
         selectedEventIDs = []
         if clearEvents {
             clearStoredEvents(for: knownAirports.map(\.icao))
         }
+    }
+
+    func patternOccupancyHistory(for airportICAO: String) -> [PatternOccupancySample] {
+        patternOccupancyByAirport[airportICAO] ?? []
+    }
+
+    func clearPatternOccupancy(for airportICAO: String? = nil) {
+        if let airportICAO {
+            patternOccupancyByAirport[airportICAO] = []
+        } else {
+            patternOccupancyByAirport = [:]
+        }
+    }
+
+    private func recordPatternOccupancy(
+        airportICAO: String,
+        aircraft: [LandingDetector.TrackedAircraft],
+        at time: Date
+    ) {
+        let sample = PatternOccupancy.sample(aircraft: aircraft, at: time)
+        var series = patternOccupancyByAirport[airportICAO] ?? []
+        if let last = series.last, abs(last.time.timeIntervalSince(time)) < 0.5 {
+            series[series.count - 1] = sample
+        } else {
+            series.append(sample)
+        }
+        let cutoff = time.addingTimeInterval(-PatternOccupancy.maxHistory)
+        series.removeAll { $0.time < cutoff }
+        if series.count > PatternOccupancy.maxSamples {
+            series = Array(series.suffix(PatternOccupancy.maxSamples))
+        }
+        patternOccupancyByAirport[airportICAO] = series
     }
 
     private func clearStoredEvents(for airportICAOs: [String]) {

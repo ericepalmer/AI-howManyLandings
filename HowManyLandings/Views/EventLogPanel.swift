@@ -12,10 +12,15 @@ struct EventLogPanel: View {
     @Environment(TrackingEngine.self) private var engine
     @State private var trackDump: TrackDumpPayload?
 
-    private var hourAgo: Date { Date().addingTimeInterval(-3600) }
+    private var hourAgo: Date { engine.simulationNow.addingTimeInterval(-3600) }
 
     private var rollingPeriod: (title: String, since: Date) {
-        LandingStats.rollingPeriod(sessionStartedAt: sessionStartedAt)
+        if engine.isRecordedReplayActive {
+            let origin = engine.recordedReplayOrigin ?? sessionStartedAt
+            let elapsed = max(0, engine.simulationNow.timeIntervalSince(origin))
+            return (LandingStats.formatDuration(elapsed), origin)
+        }
+        return LandingStats.rollingPeriod(sessionStartedAt: sessionStartedAt, now: engine.simulationNow)
     }
 
     private var scopedEvents: [StoredTrafficEvent] {

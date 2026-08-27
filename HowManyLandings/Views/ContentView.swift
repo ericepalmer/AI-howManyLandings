@@ -41,7 +41,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $engine.showingSettings) {
             SettingsView()
+            #if os(iOS)
                 .presentationDetents([.medium, .large])
+            #endif
         }
     }
 
@@ -117,12 +119,13 @@ private struct AirportDetailView: View {
                     )
                 },
                 onPlanePicked: { engine.selectedEventIDs = [] },
-                onShowADS: { openWindow(id: "ads-feed") }
+                onShowADS: { openWindow(id: "ads-feed") },
+                onShowOccupancy: { openWindow(id: "pattern-occupancy") }
             )
             .frame(width: 300)
         }
         .overlay {
-            if !engine.hasLiveFeed(for: airport.icao) {
+            if !engine.hasLiveFeed(for: airport.icao), !engine.isRecordedReplayActive {
                 ZStack {
                     Color.black.opacity(0.32)
                     ConnectionOverlay(airport: airport)
@@ -130,7 +133,15 @@ private struct AirportDetailView: View {
                 .transition(.opacity)
             }
         }
+        .overlay(alignment: .bottom) {
+            if engine.isRecordedReplayActive {
+                ReplayPaletteView()
+                    .padding(.bottom, 16)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
         .animation(.easeInOut(duration: 0.28), value: engine.liveAirportICAOs.contains(airport.icao))
+        .animation(.easeInOut(duration: 0.22), value: engine.isRecordedReplayActive)
         .navigationTitle(airport.icao)
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)

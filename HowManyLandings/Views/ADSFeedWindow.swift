@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// Live dump of decoded ADS-B polls for the selected airport.
 struct ADSFeedWindow: View {
@@ -79,22 +78,18 @@ struct ADSFeedWindow: View {
                         .disabled(engine.adsLatestPoll == nil && engine.adsLogLines.isEmpty)
                 }
                 ToolbarItem(placement: .automatic) {
-                    Button("Load file…") { showRecordingPicker = true }
+                    Button("Load file…") {
+                        #if os(macOS)
+                        if let url = RecordedADSFilePicker.chooseFile() {
+                            try? RecordedADSFilePicker.load(from: url, engine: engine)
+                        }
+                        #else
+                        showRecordingPicker = true
+                        #endif
+                    }
                 }
             }
-            .fileImporter(
-                isPresented: $showRecordingPicker,
-                allowedContentTypes: [.json, .plainText, .text],
-                allowsMultipleSelection: false
-            ) { result in
-                switch result {
-                case .success(let urls):
-                    guard let url = urls.first else { return }
-                    try? engine.loadRecordedFile(from: url)
-                case .failure:
-                    break
-                }
-            }
+            .modifier(RecordedADSFileImporter(isPresented: $showRecordingPicker, onError: { _ in }))
         }
         #if os(macOS)
         .frame(minWidth: 860, minHeight: 480)

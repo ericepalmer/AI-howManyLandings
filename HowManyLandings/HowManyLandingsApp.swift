@@ -25,12 +25,20 @@ struct HowManyLandingsApp: App {
         .defaultSize(width: 920, height: 560)
         #endif
 
+        WindowGroup("Pattern Occupancy", id: "pattern-occupancy") {
+            PatternOccupancyWindow()
+                .environment(engine)
+        }
+        #if os(macOS)
+        .defaultSize(width: 720, height: 460)
+        #endif
+
         #if os(macOS)
         Settings {
             SettingsView()
                 .environment(engine)
-                .frame(width: 460, height: 320)
         }
+        .defaultSize(width: 520, height: 680)
         #endif
     }
 }

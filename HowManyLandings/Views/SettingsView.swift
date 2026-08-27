@@ -44,7 +44,9 @@ struct SettingsView: View {
                 } header: {
                     Text("Map")
                 } footer: {
-                    Text("Background “None” is a blank canvas with no place names or range labels. Basemap opacity at 0% hides satellite/street imagery completely. Max range sets the traffic fetch distance and coverage ring (1–50 NM). Pattern boxes follow published left/right traffic per runway end.")
+                    settingsFooter(
+                        "Background “None” is a blank canvas with no place names or range labels. Basemap opacity at 0% hides satellite/street imagery completely. Max range sets the traffic fetch distance and coverage ring (1–50 NM). Pattern boxes follow published left/right traffic per runway end."
+                    )
                 }
 
                 Section {
@@ -61,7 +63,9 @@ struct SettingsView: View {
                 } header: {
                     Text("Live traffic")
                 } footer: {
-                    Text("Automatic uses the community ADS-B network (adsb.lol). OpenSky’s API host is often unreachable and is kept as an optional source if you have credentials.")
+                    settingsFooter(
+                        "Automatic uses the community ADS-B network (adsb.lol). OpenSky’s API host is often unreachable and is kept as an optional source if you have credentials."
+                    )
                 }
 
                 Section {
@@ -69,7 +73,9 @@ struct SettingsView: View {
                 } header: {
                     Text("Recorded ADS-B (debug)")
                 } footer: {
-                    Text("Load a saved feed to replay takeoff/landing and pattern detection without live traffic. Supports adsb.lol JSON (single poll or array), JSONL (one poll per line), OpenSky snapshots, and track-dump JSON exports from this app. Loading a file clears the landing log for tracked airports and resets detectors.")
+                    settingsFooter(
+                        "Load a saved feed to replay without live traffic. A floating palette on the map provides play, speed, and step controls. Supports adsb.lol JSON, JSONL, OpenSky snapshots, and track-dump exports. Loading clears the landing log and resets detectors."
+                    )
                 }
 
                 Section {
@@ -80,7 +86,9 @@ struct SettingsView: View {
                 } header: {
                     Text("OpenSky Network")
                 } footer: {
-                    Text("Only needed if you force the OpenSky source. Create an API client at opensky-network.org (Account → API Client).")
+                    settingsFooter(
+                        "Only needed if you force the OpenSky source. Create an API client at opensky-network.org (Account → API Client)."
+                    )
                 }
 
                 Section {
@@ -101,13 +109,17 @@ struct SettingsView: View {
                 } header: {
                     Text("Polling")
                 } footer: {
-                    Text("Credits apply only to OpenSky. The default Live ADS-B (adsb.lol) feed has no credit balance. OpenSky reports remaining credits on each response; daily quotas are typically 400 (anonymous), 4,000 (free account), or 8,000 (active feeder).")
+                    settingsFooter(
+                        "Credits apply only to OpenSky. The default Live ADS-B (adsb.lol) feed has no credit balance. OpenSky reports remaining credits on each response; daily quotas are typically 400 (anonymous), 4,000 (free account), or 8,000 (active feeder)."
+                    )
                 }
 
-                Section("Landing detection") {
-                    Text("Landing = onGround false→true near a runway (~0.75 NM), or while Final/Flare: AGL < 0, or AGL < 100 ft and ground speed < 50 kt. Takeoff = onGround true→false near a runway. The Pattern panel lists airborne traffic within 5 NM and ≤ 2,000 ft AGL (closest first); aircraft on the ground stay on the map (status Ground) but not the list until airborne. Departure → Crosswind → Downwind need the previous status plus the matching profile; Base, Final, and Flare use profile only. An active-runway Downwind check (no prior Crosswind) covers extended legs. If none match, the chip is Maneuvering. Lost aircraft drop after 90 seconds of no ADS-B.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                Section {
+                    settingsBodyNote(
+                        "Landing = onGround false→true near a runway (~0.75 NM), or while Final/Flare: AGL < 0, or AGL < 100 ft and ground speed < 50 kt. Takeoff = onGround true→false near a runway. The Pattern panel lists airborne traffic within 5 NM and ≤ 2,000 ft AGL (closest first); aircraft on the ground stay on the map (status Ground) but not the list until airborne. Departure (AGL < 500) → Upwind (500–1250) use runway heading on the departure side within ½ NM; outside that corridor is Maneuvering unless Crosswind. Departure → Upwind → Crosswind → Downwind need the previous status plus the matching profile; Base, Final, and Flare use profile only. An active-runway Downwind check (no prior Crosswind) covers extended legs. If none match, the chip is Maneuvering. Lost aircraft drop after 90 seconds of no ADS-B."
+                    )
+                } header: {
+                    Text("Landing detection")
                 }
 
                 Section {
@@ -116,9 +128,12 @@ struct SettingsView: View {
                 } header: {
                     Text("Debug")
                 } footer: {
-                    Text("Build increments each time you compile. Match the number in the top-left of the window to confirm you are running the latest binary. When off, track dots do not capture clicks so pinch-zoom and pan work normally. When on, clicking a track point or aircraft opens the ADS-B dump sheet.")
+                    settingsFooter(
+                        "Build increments each time you compile. Match the number in the top-left of the window to confirm you are running the latest binary. When off, track dots do not capture clicks so pinch-zoom and pan work normally. When on, clicking a track point or aircraft opens the ADS-B dump sheet."
+                    )
                 }
             }
+            .formStyle(.grouped)
             .navigationTitle("Settings")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -129,5 +144,26 @@ struct SettingsView: View {
                 }
             }
         }
+        #if os(macOS)
+        .frame(minWidth: 440, idealWidth: 520, maxWidth: 640, minHeight: 480, idealHeight: 680, maxHeight: .infinity)
+        #endif
+    }
+
+    private func settingsFooter(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func settingsBodyNote(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

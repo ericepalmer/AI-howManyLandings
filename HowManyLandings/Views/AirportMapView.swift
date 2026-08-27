@@ -132,7 +132,7 @@ struct AirportMapView: View {
                 let landingHighlight = highlightedTracks.contains { $0.icao24 == ac.id && $0.isEmphasized }
                 let isFocused = inspectedICAO == ac.id
                     || (selectedTrackerICAO24 == ac.id && !landingHighlight)
-                let trailPoints = TrackSmoother.recent(ac.track)
+                let trailPoints = TrackSmoother.recent(ac.track, now: ac.asOf)
                 let drawTrail = ac.shouldDrawTrail && !landingHighlight && trailPoints.count >= 2
                 let isEnroute = TrackPalette.isEnroute(ac.snapshot, airportElevationFt: airport.elevationFt)
                 let isSurface = Geo.isSurfaceOps(

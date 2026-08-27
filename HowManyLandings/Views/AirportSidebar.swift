@@ -85,7 +85,7 @@ struct AirportSidebar: View {
                         AirportRow(
                             airport: airport,
                             patternCount: engine.aircraftByAirport[airport.icao]?.filter(\.appearsInTracker).count ?? 0,
-                            landingsLastHour: landings(airport.icao, since: Date().addingTimeInterval(-3600))
+                            landingsLastHour: landings(airport.icao, since: engine.simulationNow.addingTimeInterval(-3600))
                         )
                         Button {
                             onRemove(airport)
