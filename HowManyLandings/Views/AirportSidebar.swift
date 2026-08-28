@@ -2,10 +2,7 @@ import SwiftUI
 
 struct AirportSidebar: View {
     let airports: [Airport]
-    let events: [StoredTrafficEvent]
     @Binding var selectedICAO: String?
-    @Binding var selectedEventIDs: Set<UUID>
-    var sessionStartedAt: Date
     var onRemove: (Airport) -> Void
     @Environment(TrackingEngine.self) private var engine
 
@@ -28,24 +25,16 @@ struct AirportSidebar: View {
             .padding(.bottom, 6)
             .help("This running app’s build number. It increments every time you build.")
 
-            GeometryReader { geo in
-                VStack(spacing: 0) {
-                    airportList
-                        .frame(height: geo.size.height / 3)
+            airportList
+                .frame(maxHeight: .infinity)
 
-                    Divider()
+            Divider()
 
-                    EventLogPanel(
-                        airport: selectedAirport,
-                        events: events,
-                        sessionStartedAt: sessionStartedAt,
-                        selectedEventIDs: $selectedEventIDs
-                    )
-                    .frame(height: geo.size.height * 2 / 3)
-                }
-            }
+            PatternOccupancyMiniChart(airportICAO: selectedAirport?.icao)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
         }
-        .navigationTitle("Landings")
+        .navigationTitle("Airports")
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Text(AppBuild.label)
@@ -84,8 +73,7 @@ struct AirportSidebar: View {
                     HStack(alignment: .center, spacing: 8) {
                         AirportRow(
                             airport: airport,
-                            patternCount: engine.aircraftByAirport[airport.icao]?.filter(\.appearsInTracker).count ?? 0,
-                            landingsLastHour: landings(airport.icao, since: engine.simulationNow.addingTimeInterval(-3600))
+                            patternCount: patternOccupancyCount(for: airport.icao)
                         )
                         Button {
                             onRemove(airport)
@@ -118,30 +106,20 @@ struct AirportSidebar: View {
         .listStyle(.sidebar)
     }
 
-    private func landings(_ icao: String, since date: Date) -> Int {
-        events.filter { $0.airportICAO == icao && $0.kind.countsAsLanding && $0.timestamp >= date }.count
+    private func patternOccupancyCount(for icao: String) -> Int {
+        let now = engine.simulationNow
+        return engine.aircraftByAirport[icao]?.filter { $0.countsTowardPatternOccupancy(at: now) }.count ?? 0
     }
 }
 
 private struct AirportRow: View {
     let airport: Airport
     let patternCount: Int
-    let landingsLastHour: Int
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(airport.icao)
-                    .font(.headline.monospaced())
-                Spacer()
-                if landingsLastHour > 0 {
-                    Text("\(landingsLastHour)")
-                        .font(.caption.weight(.semibold))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.accentColor.opacity(0.2), in: Capsule())
-                }
-            }
+            Text(airport.icao)
+                .font(.headline.monospaced())
             Text(airport.city.isEmpty ? airport.name : airport.city)
                 .font(.caption)
                 .foregroundStyle(.secondary)

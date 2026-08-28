@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Right-panel list of pattern traffic, grouped by leg.
+/// Right-panel list of pattern traffic, grouped by leg (same rules as occupancy graph).
 struct PatternTrackerView: View {
     let airport: Airport
     let aircraft: [LandingDetector.TrackedAircraft]
@@ -10,9 +10,11 @@ struct PatternTrackerView: View {
     var onShowADS: (() -> Void)?
     var onShowOccupancy: (() -> Void)?
     var onShowMETAR: (() -> Void)?
+    @Environment(TrackingEngine.self) private var engine
 
     private var tracked: [LandingDetector.TrackedAircraft] {
-        aircraft.filter(\.appearsInTracker)
+        let now = engine.simulationNow
+        return aircraft.filter { $0.countsTowardPatternOccupancy(at: now) }
     }
 
     private var grouped: [(TrackerCategory, [LandingDetector.TrackedAircraft])] {
@@ -47,7 +49,7 @@ struct PatternTrackerView: View {
                 TimelineView(.periodic(from: .now, by: 10)) { _ in
                     LazyVStack(alignment: .leading, spacing: 3) {
                         if grouped.isEmpty {
-                            Text("No pattern traffic yet. Airborne aircraft inside 5 NM and at or below 2,000 ft AGL appear here, plus recently landed for 5 minutes.")
+                            Text("No pattern traffic yet. Airborne Departure through Final inside 5 NM and at or below 2,000 ft AGL — not Maneuvering, Leaving, or on the ground.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .padding(.horizontal, 8)

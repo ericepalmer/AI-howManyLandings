@@ -16,6 +16,17 @@ enum PatternOccupancy {
     /// Max history retained per airport (wall or recording clock).
     static let maxHistory: TimeInterval = 6 * 60 * 60
     static let maxSamples = 4_000
+    /// Mini sidebar chart: panel width spans this window.
+    static let miniChartWindow: TimeInterval = 10 * 60
+
+    static func recentSamples(
+        _ samples: [PatternOccupancySample],
+        now: Date,
+        window: TimeInterval = miniChartWindow
+    ) -> [PatternOccupancySample] {
+        let cutoff = now.addingTimeInterval(-window)
+        return samples.filter { $0.time >= cutoff }
+    }
 
     /// Typical remaining time in a piston pattern until landing, by last known leg.
     /// Used when ADS-B drops so lost aircraft still count until the ETA elapses.
@@ -53,12 +64,14 @@ enum PatternOccupancy {
 }
 
 extension LandingDetector.TrackedAircraft {
-    /// Airborne pattern traffic (≤ 5 NM, ≤ 2,000 ft AGL). Lost contacts stay
-    /// counted until the phase-based landing ETA from last ADS-B.
+    /// Airborne pattern legs (≤ 5 NM, ≤ 2,000 ft AGL). Excludes Ground, Leaving,
+    /// and Maneuvering. Lost contacts stay counted until the phase-based landing ETA.
     func countsTowardPatternOccupancy(at now: Date) -> Bool {
         if snapshot.onGround { return false }
         if flightState?.isGround == true { return false }
-        if patternPhase == .ground || patternPhase == .leaving { return false }
+        if patternPhase == .ground || patternPhase == .leaving || patternPhase == .maneuvering {
+            return false
+        }
         if lastLandingAt != nil, isCoasting { return false }
         guard inPattern else { return false }
         if !isCoasting { return true }

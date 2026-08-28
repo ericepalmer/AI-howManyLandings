@@ -14,7 +14,7 @@ struct HowManyLandingsApp: App {
             ContentView()
                 .environment(engine)
         }
-        .modelContainer(for: [StoredAirport.self, StoredTrafficEvent.self])
+        .modelContainer(for: [StoredAirport.self])
         .defaultSize(width: 1240, height: 820)
 
         WindowGroup("ADS-B Feed", id: "ads-feed") {

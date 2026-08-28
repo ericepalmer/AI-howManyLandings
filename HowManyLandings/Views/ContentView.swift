@@ -5,7 +5,6 @@ struct ContentView: View {
     @Environment(TrackingEngine.self) private var engine
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \StoredAirport.addedAt) private var storedAirports: [StoredAirport]
-    @Query(sort: \StoredTrafficEvent.timestamp, order: .reverse) private var events: [StoredTrafficEvent]
 
     private var airports: [Airport] {
         storedAirports.map(\.asAirport)
@@ -16,15 +15,12 @@ struct ContentView: View {
         NavigationSplitView {
             AirportSidebar(
                 airports: airports,
-                events: events,
                 selectedICAO: $engine.selectedICAO,
-                selectedEventIDs: $engine.selectedEventIDs,
-                sessionStartedAt: engine.sessionStartedAt ?? Date(),
                 onRemove: removeAirport
             )
         } detail: {
             if let airport = engine.selectedAirport(from: airports) {
-                AirportDetailView(airport: airport, events: events.filter { $0.airportICAO == airport.icao })
+                AirportDetailView(airport: airport)
             } else {
                 EmptyTrackingView()
             }
@@ -59,36 +55,28 @@ struct ContentView: View {
 
 private struct AirportDetailView: View {
     let airport: Airport
-    let events: [StoredTrafficEvent]
     @Environment(TrackingEngine.self) private var engine
     @Environment(\.openWindow) private var openWindow
     @State private var trackDump: TrackDumpPayload?
 
     var body: some View {
         @Bindable var engine = engine
-        let selectedEvents = events.filter { engine.selectedEventIDs.contains($0.eventID) }
         let selectedICAO24s: Set<String> = {
-            var ids = Set(selectedEvents.map(\.aircraftICAO24))
             if let tracker = engine.selectedTrackerICAO24 {
-                ids.insert(tracker)
+                return [tracker]
             }
-            return ids
+            return []
         }()
-        let highlightedTracks = mapTracks(
-            selectedEvents: selectedEvents,
-            liveAircraft: engine.selectedAircraft
-        )
 
         HStack(spacing: 0) {
             AirportMapView(
                 airport: airport,
                 aircraft: engine.selectedAircraft,
                 activeRunwayDirection: engine.selectedActiveRunway,
-                highlightedTracks: highlightedTracks,
+                highlightedTracks: [],
                 selectedICAO24s: selectedICAO24s,
                 selectedTrackerICAO24: engine.selectedTrackerICAO24,
                 onSelectAircraft: { icao in
-                    engine.selectedEventIDs = []
                     if engine.selectedTrackerICAO24 == icao {
                         engine.selectedTrackerICAO24 = nil
                     } else {
@@ -118,7 +106,7 @@ private struct AirportDetailView: View {
                         points: ac.track
                     )
                 },
-                onPlanePicked: { engine.selectedEventIDs = [] },
+                onPlanePicked: {},
                 onShowADS: { openWindow(id: "ads-feed") },
                 onShowOccupancy: { openWindow(id: "pattern-occupancy") },
                 onShowMETAR: { openWindow(id: "metar", value: airport.icao) }
@@ -169,47 +157,11 @@ private struct AirportDetailView: View {
             }
         }
         .onChange(of: airport.icao) { _, _ in
-            engine.selectedEventIDs = []
             engine.selectedTrackerICAO24 = nil
         }
         .sheet(item: $trackDump) { dump in
             TrackDumpSheet(dump: dump)
         }
-    }
-
-    private func mapTracks(
-        selectedEvents: [StoredTrafficEvent],
-        liveAircraft: [LandingDetector.TrackedAircraft]
-    ) -> [HighlightedSavedTrack] {
-        let liveByICAO = Dictionary(uniqueKeysWithValues: liveAircraft.map { ($0.id, $0) })
-        var tracks: [HighlightedSavedTrack] = []
-        var seenEventIDs = Set<UUID>()
-
-        for event in selectedEvents where event.kind.countsAsLanding {
-            guard seenEventIDs.insert(event.eventID).inserted else { continue }
-            let live = liveByICAO[event.aircraftICAO24]
-            let points = TrackSmoother.landingReplayPoints(
-                stored: event.track,
-                live: live?.track ?? [],
-                landingAt: event.timestamp
-            )
-            guard points.count >= 2 else { continue }
-            tracks.append(
-                HighlightedSavedTrack(
-                    id: event.eventID,
-                    label: "\(event.tailNumber) · \(event.kind.title)",
-                    points: points,
-                    color: TrackPalette.swatch(for: event.aircraftICAO24),
-                    icao24: event.aircraftICAO24,
-                    kindTitle: event.kind.title,
-                    eventTimestamp: event.timestamp,
-                    airportICAO: event.airportICAO,
-                    isEmphasized: true
-                )
-            )
-        }
-
-        return tracks
     }
 }
 
@@ -220,7 +172,7 @@ private struct EmptyTrackingView: View {
         ContentUnavailableView {
             Label("No airport selected", systemImage: "airplane.circle")
         } description: {
-            Text("Add an airport by ICAO, FAA ID, or name to start tracking pattern traffic and counting landings.")
+            Text("Add an airport by ICAO, FAA ID, or name to start tracking pattern traffic.")
         } actions: {
             Button {
                 engine.showingAddAirport = true
@@ -235,5 +187,5 @@ private struct EmptyTrackingView: View {
 #Preview {
     ContentView()
         .environment(TrackingEngine())
-        .modelContainer(for: [StoredAirport.self, StoredTrafficEvent.self], inMemory: true)
+        .modelContainer(for: [StoredAirport.self], inMemory: true)
 }

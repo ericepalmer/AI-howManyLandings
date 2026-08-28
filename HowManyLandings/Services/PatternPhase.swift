@@ -72,8 +72,12 @@ struct PatternCircuitState: Sendable, Equatable {
 enum PatternClassifier {
     private static let flareAGLFt = 100.0
     private static let baseMaxAGLFt = 1_000.0
-    private static let downwindMinNM = 0.3
-    private static let downwindMaxNM = 1.5
+    private static let downwindMinNM = 0.25
+    private static let downwindMaxNM = 2.0
+    /// Behind the landing threshold along the downwind leg.
+    private static let downwindAlongBehindNM = 0.8
+    /// Past the departure end — extended downwinds for traffic (≈1 NM beyond prior limit).
+    private static let downwindAlongPastFarNM = 1.8
     /// Departure: runway heading, departure side, within this lateral distance, AGL below band.
     private static let departureLateralMaxNM = 0.5
     private static let departureMaxAGLFt = 500.0
@@ -84,8 +88,11 @@ enum PatternClassifier {
     private static let patternAltitudeAboveFt = 300.0
     private static let patternAltitudeBelowFt = 500.0
     /// Field distance for active-runway downwind (covers extended legs).
-    private static let activeDownwindMaxFieldNM = 3.5
+    private static let activeDownwindMaxFieldNM = 4.0
     private static let leavingFieldNM = 2.2
+    /// Min increase in field distance before Leaving (or to keep holding Leaving).
+    private static let leavingStretchNM = 0.08
+    private static let approachingShrinkNM = 0.05
     /// Climb-out turn may briefly show Maneuvering before Crosswind geometry matches.
     private static let recentTakeoffSeconds: TimeInterval = 600
     private static let alignTol = 22.0
@@ -343,6 +350,7 @@ enum PatternClassifier {
             heading: heading,
             agl: agl,
             distanceNM: distanceNM,
+            previousDistanceNM: previousDistanceNM,
             sawCrosswind: sawCrosswind,
             speed: speed,
             requiresActive: previous == .crosswind || previous == .downwind || previous == .base,
@@ -585,7 +593,21 @@ enum PatternClassifier {
         let lateral = chosen.distanceToRunwayNM(from: point)
         guard lateral >= downwindMinNM, lateral <= downwindMaxNM else { return false }
         let frame = chosen.frame(at: point)
-        return frame.along > -0.6 && frame.along < chosen.lengthNM + 0.8
+        return isDownwindAlongRange(chosen: chosen, along: frame.along)
+    }
+
+    private static func isDownwindAlongRange(chosen: RunwayApproach, along: Double) -> Bool {
+        along > -downwindAlongBehindNM && along < chosen.lengthNM + downwindAlongPastFarNM
+    }
+
+    private static func isStretchingAway(distanceNM: Double, previousDistanceNM: Double?) -> Bool {
+        guard let previous = previousDistanceNM else { return false }
+        return distanceNM > previous + leavingStretchNM
+    }
+
+    private static func isApproachingField(distanceNM: Double, previousDistanceNM: Double?) -> Bool {
+        guard let previous = previousDistanceNM else { return false }
+        return distanceNM < previous - approachingShrinkNM
     }
 
     /// Downwind from active runway alone (no Crosswind memory). Extended legs OK within 3.5 NM.
@@ -617,6 +639,7 @@ enum PatternClassifier {
             let rightTraffic = approach.runway.usesRightTraffic(forApproachIdent: approach.ident)
             let onPatternSide = rightTraffic ? frame.crossRight > 0.05 : frame.crossRight < -0.05
             guard onPatternSide else { continue }
+            guard isDownwindAlongRange(chosen: approach, along: frame.along) else { continue }
             let ideal = TrafficPattern.downwindOffsetNM
             let score = abs(lateral - ideal)
             if score < bestScore {
@@ -657,6 +680,10 @@ enum PatternClassifier {
         approaches: [RunwayApproach],
         agl: Double?
     ) -> Bool {
+        if isApproachingField(distanceNM: distanceNM, previousDistanceNM: previousDistanceNM) {
+            return false
+        }
+
         // Still on an active-runway downwind (including extended) — not leaving.
         if activeRunwayDownwind(
             approaches: approaches,
@@ -676,16 +703,19 @@ enum PatternClassifier {
         }
         let bearingFromField = Geo.bearing(from: airport.coordinate, to: point)
         let headingAway = heading.map { Geo.isAbout($0, bearingFromField, tolerance: 55) } ?? false
-        let stretching = previousDistanceNM.map { distanceNM > $0 + 0.08 } ?? false
+        let stretching = isStretchingAway(distanceNM: distanceNM, previousDistanceNM: previousDistanceNM)
+
+        guard stretching || previousDistanceNM == nil else { return false }
+
         if distanceNM > leavingFieldNM, headingAway { return true }
-        if distanceNM > 1.8, headingAway, stretching, previous == .departure || previous == .upwind || previous == .leaving {
+        if distanceNM > 1.8, headingAway, previous == .departure || previous == .upwind || previous == .leaving {
             return true
         }
         if previous == .downwind, let chosen {
             let lateral = chosen.distanceToRunwayNM(from: point)
-            if lateral > downwindMaxNM + 0.15, headingAway { return true }
+            if lateral > downwindMaxNM + 0.2, headingAway { return true }
         }
-        return distanceNM > 3.2
+        return distanceNM > 3.2 && headingAway
     }
 
     private static func holds(
@@ -695,6 +725,7 @@ enum PatternClassifier {
         heading: Double?,
         agl: Double?,
         distanceNM: Double,
+        previousDistanceNM: Double?,
         sawCrosswind: Bool,
         speed: Double?,
         requiresActive: Bool,
@@ -735,7 +766,8 @@ enum PatternClassifier {
             guard sawCrosswind else { return false }
             let lateral = chosen.distanceToRunwayNM(from: point)
             return isDownwind(chosen: chosen, point: point, heading: heading, agl: agl)
-                || (lateral >= 0.22 && lateral <= 1.7
+                || (lateral >= downwindMinNM && lateral <= downwindMaxNM
+                    && isDownwindAlongRange(chosen: chosen, along: chosen.frame(at: point).along)
                     && heading.map { Geo.isAbout($0, chosen.headingDeg + 180, tolerance: 30) } == true)
         case .base:
             guard let chosen else { return false }
@@ -761,7 +793,13 @@ enum PatternClassifier {
             return isFlare(chosen: chosen, point: point, heading: heading, agl: agl, speed: speed)
                 || ((agl ?? 0) < 160 && chosen.distanceToThresholdNM(from: point) < 0.55)
         case .leaving:
+            if isApproachingField(distanceNM: distanceNM, previousDistanceNM: previousDistanceNM) {
+                return false
+            }
             return distanceNM > 1.7
+                && (previousDistanceNM == nil
+                    || isStretchingAway(distanceNM: distanceNM, previousDistanceNM: previousDistanceNM)
+                    || distanceNM > leavingFieldNM)
         }
     }
 

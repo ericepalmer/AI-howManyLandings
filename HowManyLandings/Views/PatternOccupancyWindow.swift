@@ -46,7 +46,7 @@ struct PatternOccupancyWindow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Aircraft in pattern")
                     .font(.headline)
-                Text("≤ \(Int(Geo.patternMaxAGLFt)) ft AGL · ≤ \(Int(Geo.patternRadiusNM)) NM · lost ETA only for Downwind/Base/Final/Flare")
+                Text("≤ \(Int(Geo.patternMaxAGLFt)) ft AGL · ≤ \(Int(Geo.patternRadiusNM)) NM · Departure–Final only · lost ETA for Downwind/Base/Final/Flare")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

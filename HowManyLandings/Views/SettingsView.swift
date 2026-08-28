@@ -116,10 +116,10 @@ struct SettingsView: View {
 
                 Section {
                     settingsBodyNote(
-                        "Landing = onGround false→true near a runway (~0.75 NM), or while Final/Flare: AGL < 0, or AGL < 100 ft and ground speed < 50 kt. Takeoff = onGround true→false near a runway. The Pattern panel groups traffic into Recently landed, Final (includes Flare), Base, Downwind, Upwind (Departure / Upwind / Crosswind / takeoff), Maneuvering, and Leaving. Airborne aircraft within 5 NM and ≤ 2,000 ft AGL appear there; recently landed stay for 5 minutes. Departure (AGL < 500) → Upwind (500–1250) use runway heading on the departure side within ½ NM; outside that corridor is Maneuvering unless Crosswind. Departure → Upwind → Crosswind → Downwind need the previous status plus the matching profile; Base, Final, and Flare use profile only. An active-runway Downwind check (no prior Crosswind) covers extended legs. If none match, the chip is Maneuvering. Lost aircraft drop after 90 seconds of no ADS-B."
+                        "The Pattern panel and occupancy charts list the same traffic: airborne Departure, Upwind, Crosswind, Downwind, Base, Final, and Flare within 5 NM and ≤ 2,000 ft AGL. Maneuvering, Leaving, Ground, and surface aircraft are excluded. The sidebar mini-chart shows occupancy over the last 10 minutes."
                     )
                 } header: {
-                    Text("Landing detection")
+                    Text("Pattern tracking")
                 }
 
                 Section {

@@ -1,7 +1,7 @@
 import CoreLocation
 import Foundation
 
-/// Landing / takeoff detection near this airport.
+/// Pattern tracking and aircraft state near this airport.
 ///
 /// - Landing: `onGround` false → true while close to the field / runway
 /// - Landing (final/flare): AGL < 0, or AGL < 100 ft and GS < 50 kt
@@ -46,21 +46,6 @@ struct LandingDetector: Sendable {
         var airportFallbackNM: Double = 1.0
         /// Safety cap after the 5-minute time window (typical poll yields far fewer).
         var maxTrackPoints: Int = 64
-    }
-
-    struct OutputEvent: Sendable {
-        var eventID: UUID
-        var kind: TrafficEventKind
-        var timestamp: Date
-        var icao24: String
-        var tailNumber: String
-        var category: AircraftCategory
-        var typeLabel: String
-        var altitudeAGLFt: Double?
-        var groundSpeedKt: Double?
-        var coordinate: CLLocationCoordinate2D
-        var track: [TrackPoint]
-        var isUpdate: Bool
     }
 
     struct TrackedAircraft: Identifiable, Sendable {
@@ -163,9 +148,8 @@ struct LandingDetector: Sendable {
         airport: Airport,
         trackingRadiusNM: Double = Geo.defaultTrackingRadiusNM,
         now: Date = Date()
-    ) -> (aircraft: [TrackedAircraft], events: [OutputEvent], purgedICAO24s: Set<String>) {
+    ) -> (aircraft: [TrackedAircraft], purgedICAO24s: Set<String>) {
         var seen: Set<String> = []
-        var events: [OutputEvent] = []
         /// Prefer the final/flare aircraft closest to its threshold when several are present.
         var bestFinalScore = Double.greatestFiniteMagnitude
 
@@ -194,21 +178,19 @@ struct LandingDetector: Sendable {
             appendEngagementPoint(point, to: &memory, now: now)
 
             // Kinematic landing uses the prior Final/Flare chip — must run before
-            // PatternClassifier, which would otherwise fold AGL < 0 into Ground with no event.
-            if let event = evaluateKinematicLanding(
+            // PatternClassifier, which would otherwise fold AGL < 0 into Ground.
+            if !applyKinematicLanding(
                 snapshot: snapshot,
                 agl: agl,
                 airport: airport,
                 memory: &memory
             ) {
-                events.append(event)
-            } else if let event = evaluateOnGroundEdge(
-                snapshot: snapshot,
-                agl: agl,
-                airport: airport,
-                memory: &memory
-            ) {
-                events.append(event)
+                applyOnGroundEdge(
+                    snapshot: snapshot,
+                    agl: agl,
+                    airport: airport,
+                    memory: &memory
+                )
             }
             PatternClassifier.update(
                 state: &memory.pattern,
@@ -283,7 +265,7 @@ struct LandingDetector: Sendable {
         }
         .sorted { $0.snapshot.displayLabel < $1.snapshot.displayLabel }
 
-        return (aircraft, events, purgedICAO24s)
+        return (aircraft, purgedICAO24s)
     }
 
     mutating func reset() {
@@ -291,51 +273,51 @@ struct LandingDetector: Sendable {
         activeRunwayDirection = nil
     }
 
-    // MARK: - Landing / takeoff detection
+    // MARK: - Surface state (no event log)
 
     /// Final / flare only: AGL < 0, or AGL < 100 ft with GS < 50 kt.
-    private mutating func evaluateKinematicLanding(
+    @discardableResult
+    private mutating func applyKinematicLanding(
         snapshot: AircraftSnapshot,
         agl: Double?,
         airport: Airport,
         memory: inout AircraftMemory
-    ) -> OutputEvent? {
-        guard memory.pattern.phase == .final || memory.pattern.phase == .flare else { return nil }
-        if memory.flightState?.isGround == true { return nil }
-        if memory.lastOnGround == true { return nil }
+    ) -> Bool {
+        guard memory.pattern.phase == .final || memory.pattern.phase == .flare else { return false }
+        if memory.flightState?.isGround == true { return false }
+        if memory.lastOnGround == true { return false }
 
-        guard let agl else { return nil }
+        guard let agl else { return false }
         let speed = snapshot.groundSpeedKt ?? .greatestFiniteMagnitude
         let belowField = agl < 0
         let lowAndSlow = agl < 100 && speed < 50
-        guard belowField || lowAndSlow else { return nil }
-        guard isCloseEnoughForEvent(coordinate: snapshot.coordinate, airport: airport) else {
-            return nil
+        guard belowField || lowAndSlow else { return false }
+        guard isCloseEnoughForSurfaceOps(coordinate: snapshot.coordinate, airport: airport) else {
+            return false
         }
 
-        return recordLanding(
+        applyLandingState(
             snapshot: snapshot,
-            agl: agl,
             airport: airport,
             memory: &memory,
             inferredGround: true
         )
+        return true
     }
 
     /// Landing = false→true, takeoff = true→false. First sample sets baseline only.
-    /// Events require proximity to this airport / its runways.
-    private mutating func evaluateOnGroundEdge(
+    private mutating func applyOnGroundEdge(
         snapshot: AircraftSnapshot,
         agl: Double?,
         airport: Airport,
         memory: inout AircraftMemory
-    ) -> OutputEvent? {
+    ) {
         let onGround = snapshot.onGround
 
         guard let previous = memory.lastOnGround else {
             memory.lastOnGround = onGround
             memory.flightState = onGround ? .initialGround : .tookOff
-            return nil
+            return
         }
 
         // After a kinematic landing, ADS-B may still report airborne — stay on the ground
@@ -346,7 +328,7 @@ struct LandingDetector: Sendable {
             if aglFt < 100 || speed < 50 {
                 memory.lastOnGround = true
                 memory.flightState = .landed
-                return nil
+                return
             }
             memory.groundInferred = false
         }
@@ -354,19 +336,19 @@ struct LandingDetector: Sendable {
         memory.lastOnGround = onGround
         memory.flightState = onGround ? .landed : .tookOff
 
-        guard previous != onGround else { return nil }
-        guard isCloseEnoughForEvent(coordinate: snapshot.coordinate, airport: airport) else {
-            return nil
+        guard previous != onGround else { return }
+        guard isCloseEnoughForSurfaceOps(coordinate: snapshot.coordinate, airport: airport) else {
+            return
         }
 
         if onGround {
-            return recordLanding(
+            applyLandingState(
                 snapshot: snapshot,
-                agl: agl,
                 airport: airport,
                 memory: &memory,
                 inferredGround: false
             )
+            return
         }
 
         memory.lastTakeoffAt = snapshot.timestamp
@@ -381,29 +363,14 @@ struct LandingDetector: Sendable {
         ) {
             activeRunwayDirection = direction
         }
-        return OutputEvent(
-            eventID: UUID(),
-            kind: .takeoff,
-            timestamp: snapshot.timestamp,
-            icao24: snapshot.icao24,
-            tailNumber: memory.snapshot?.displayLabel ?? snapshot.displayLabel,
-            category: memory.snapshot?.category ?? snapshot.category,
-            typeLabel: memory.snapshot?.typeDisplay ?? snapshot.category.displayName,
-            altitudeAGLFt: agl,
-            groundSpeedKt: snapshot.groundSpeedKt,
-            coordinate: snapshot.coordinate,
-            track: TrackPoint.detachedCopy(memory.track),
-            isUpdate: false
-        )
     }
 
-    private mutating func recordLanding(
+    private mutating func applyLandingState(
         snapshot: AircraftSnapshot,
-        agl: Double?,
         airport: Airport,
         memory: inout AircraftMemory,
         inferredGround: Bool
-    ) -> OutputEvent {
+    ) {
         memory.lastOnGround = true
         memory.flightState = .landed
         memory.lastLandingAt = snapshot.timestamp
@@ -417,25 +384,10 @@ struct LandingDetector: Sendable {
         ) {
             activeRunwayDirection = direction
         }
-        return OutputEvent(
-            eventID: UUID(),
-            kind: .fullStop,
-            timestamp: snapshot.timestamp,
-            icao24: snapshot.icao24,
-            tailNumber: memory.snapshot?.displayLabel ?? snapshot.displayLabel,
-            category: memory.snapshot?.category ?? snapshot.category,
-            typeLabel: memory.snapshot?.typeDisplay ?? snapshot.category.displayName,
-            altitudeAGLFt: agl,
-            groundSpeedKt: snapshot.groundSpeedKt,
-            coordinate: snapshot.coordinate,
-            track: TrackPoint.detachedCopy(memory.track),
-            isUpdate: false
-        )
     }
 
     /// Geographic gate: near *this* airport's runways (or the field if no runway data).
-    /// A wide circle around the field was letting neighboring airports count as landings.
-    private func isCloseEnoughForEvent(coordinate: CLLocationCoordinate2D, airport: Airport) -> Bool {
+    private func isCloseEnoughForSurfaceOps(coordinate: CLLocationCoordinate2D, airport: Airport) -> Bool {
         if airport.runways.isEmpty {
             return Geo.distanceNM(coordinate, airport.coordinate) <= config.airportFallbackNM
         }

@@ -22,8 +22,6 @@ final class TrackingEngine {
     var showingAddAirport = false
     var showingSettings = false
     var sessionStartedAt: Date?
-    /// Log entries whose saved tracks are highlighted on the map (often a whole tail).
-    var selectedEventIDs: Set<UUID> = []
     /// Pattern-tracker card selection (Mode-S hex); drives map trail emphasis.
     var selectedTrackerICAO24: String?
     /// Latest decoded ADS-B poll for the selected airport (before pattern filtering).
@@ -272,8 +270,6 @@ final class TrackingEngine {
                 if airport.icao == selectedICAO {
                     totalAircraft = output.aircraft.filter(\.inRange).count
                 }
-                persist(output.events, airport: airport)
-                clearExpiredTracks(icao24s: output.purgedICAO24s, airportICAO: airport.icao)
             } catch let error as OpenSkyError {
                 errors.append(error.localizedDescription)
                 if case .rateLimited = error {
@@ -340,7 +336,7 @@ final class TrackingEngine {
         if let suggested = manifest.suggestedAirportICAO {
             selectedICAO = suggested
         }
-        resetReplayDetectors(clearEvents: true)
+        resetReplayDetectors()
         clearADSFeed()
         // Avoid the live-connection overlay while scrubbing a recording.
         if let selectedICAO {
@@ -399,7 +395,7 @@ final class TrackingEngine {
         recordedReplayFinished = false
         recordedStepForwardPending = false
         isRecordedReplayPlaying = autoplay
-        resetReplayDetectors(clearEvents: true)
+        resetReplayDetectors()
         clearADSFeed()
         if let selectedICAO {
             liveAirportICAOs.insert(selectedICAO)
@@ -425,7 +421,7 @@ final class TrackingEngine {
         if AppSettings.feedSource == .recorded {
             AppSettings.feedSource = restoreLiveSource
         }
-        resetReplayDetectors(clearEvents: false)
+        resetReplayDetectors()
         statusText = "Live traffic · \(AppSettings.feedSource.title)"
         Task { await pollOnce() }
     }
@@ -434,7 +430,7 @@ final class TrackingEngine {
     private func seekRecordedReplay(to targetIndex: Int) async {
         guard let recording, isRecordedReplayActive else { return }
         let clamped = max(0, min(targetIndex, recording.polls.count))
-        resetReplayDetectors(clearEvents: true)
+        resetReplayDetectors()
         clearADSFeed()
         recordedPollIndex = 0
         recordedReplayFinished = false
@@ -469,8 +465,6 @@ final class TrackingEngine {
                 aircraft: output.aircraft,
                 at: poll.time
             )
-            persist(output.events, airport: airport)
-            clearExpiredTracks(icao24s: output.purgedICAO24s, airportICAO: airport.icao)
         }
 
         detectors[airport.icao] = detector
@@ -495,7 +489,7 @@ final class TrackingEngine {
         }
     }
 
-    private func resetReplayDetectors(clearEvents: Bool) {
+    private func resetReplayDetectors() {
         for icao in knownAirports.map(\.icao) {
             detectors[icao] = LandingDetector()
             aircraftByAirport[icao] = []
@@ -503,10 +497,6 @@ final class TrackingEngine {
             patternOccupancyByAirport[icao] = []
         }
         selectedTrackerICAO24 = nil
-        selectedEventIDs = []
-        if clearEvents {
-            clearStoredEvents(for: knownAirports.map(\.icao))
-        }
     }
 
     func patternOccupancyHistory(for airportICAO: String) -> [PatternOccupancySample] {
@@ -539,19 +529,6 @@ final class TrackingEngine {
             series = Array(series.suffix(PatternOccupancy.maxSamples))
         }
         patternOccupancyByAirport[airportICAO] = series
-    }
-
-    private func clearStoredEvents(for airportICAOs: [String]) {
-        guard let modelContext, !airportICAOs.isEmpty else { return }
-        let codes = airportICAOs
-        let descriptor = FetchDescriptor<StoredTrafficEvent>(
-            predicate: #Predicate { codes.contains($0.airportICAO) }
-        )
-        guard let stored = try? modelContext.fetch(descriptor) else { return }
-        for event in stored {
-            modelContext.delete(event)
-        }
-        try? modelContext.save()
     }
 
     private func takeNextRecordedPoll() throws -> ADSRecordedPoll {
@@ -650,89 +627,6 @@ final class TrackingEngine {
         let stamp = receivedAt.formatted(date: .omitted, time: .standard)
         adsLogLines.append("[\(stamp)] \(sourceName) \(airport.icao)  \(rows.count) aircraft")
         adsLogLines.append(contentsOf: rows.map { "  \($0.logLine)" })
-    }
-
-    /// When engagement memory expires, drop saved tracks so log color swatches disappear.
-    private func clearExpiredTracks(icao24s: Set<String>, airportICAO: String) {
-        guard let modelContext, !icao24s.isEmpty else { return }
-        let descriptor = FetchDescriptor<StoredTrafficEvent>(
-            predicate: #Predicate { $0.airportICAO == airportICAO }
-        )
-        guard let stored = try? modelContext.fetch(descriptor) else { return }
-        var changed = false
-        for event in stored where icao24s.contains(event.aircraftICAO24) {
-            guard event.hasSavedTrack else { continue }
-            // Landing replays are frozen copies; do not delete them when live memory expires.
-            if event.kind.countsAsLanding { continue }
-            event.trackJSON = nil
-            selectedEventIDs.remove(event.eventID)
-            changed = true
-        }
-        if changed {
-            try? modelContext.save()
-        }
-    }
-
-    private func persist(_ events: [LandingDetector.OutputEvent], airport: Airport) {
-        guard let modelContext, !events.isEmpty else { return }
-        let cooldown: TimeInterval = 90
-        for event in events {
-            if event.isUpdate {
-                let eventID = event.eventID
-                var descriptor = FetchDescriptor<StoredTrafficEvent>(
-                    predicate: #Predicate { $0.eventID == eventID }
-                )
-                descriptor.fetchLimit = 1
-                if let existing = try? modelContext.fetch(descriptor).first {
-                    existing.kind = event.kind
-                    existing.tailNumber = event.tailNumber
-                    existing.aircraftType = event.typeLabel
-                    existing.altitudeAGLFt = event.altitudeAGLFt
-                    existing.groundSpeedKt = event.groundSpeedKt
-                    if !event.track.isEmpty {
-                        existing.trackJSON = StoredTrafficEvent.encodeTrack(event.track)
-                    }
-                    continue
-                }
-            }
-
-            // Belt-and-suspenders: drop near-duplicate same aircraft + kind inserts.
-            let airportICAO = airport.icao
-            let icao24 = event.icao24
-            let kindRaw = event.kind.rawValue
-            let earliest = event.timestamp.addingTimeInterval(-cooldown)
-            var dupCheck = FetchDescriptor<StoredTrafficEvent>(
-                predicate: #Predicate {
-                    $0.airportICAO == airportICAO
-                        && $0.aircraftICAO24 == icao24
-                        && $0.kindRaw == kindRaw
-                        && $0.timestamp >= earliest
-                }
-            )
-            dupCheck.fetchLimit = 1
-            if let existing = try? modelContext.fetch(dupCheck).first,
-               abs(existing.timestamp.timeIntervalSince(event.timestamp)) < cooldown {
-                if existing.track.isEmpty, !event.track.isEmpty {
-                    existing.trackJSON = StoredTrafficEvent.encodeTrack(event.track)
-                }
-                continue
-            }
-
-            let stored = StoredTrafficEvent(
-                eventID: event.eventID,
-                airportICAO: airport.icao,
-                aircraftICAO24: event.icao24,
-                tailNumber: event.tailNumber,
-                aircraftType: event.typeLabel,
-                kind: event.kind,
-                timestamp: event.timestamp,
-                altitudeAGLFt: event.altitudeAGLFt,
-                groundSpeedKt: event.groundSpeedKt,
-                track: event.track
-            )
-            modelContext.insert(stored)
-        }
-        try? modelContext.save()
     }
 }
 
