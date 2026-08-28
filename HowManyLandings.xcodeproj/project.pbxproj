@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXFileReference section */
+		A1A1A1A1A1A1A1A1A1A1A102 /* HowManyLandings.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HowManyLandings.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		A1A1A1A1A1A1A1A1A1A1A101 /* HowManyLandings */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
@@ -13,10 +17,6 @@
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
-
-/* Begin PBXFileReference section */
-		A1A1A1A1A1A1A1A1A1A1A102 /* HowManyLandings.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HowManyLandings.app; sourceTree = BUILT_PRODUCTS_DIR; };
-/* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		A1A1A1A1A1A1A1A1A1A1A103 /* Frameworks */ = {

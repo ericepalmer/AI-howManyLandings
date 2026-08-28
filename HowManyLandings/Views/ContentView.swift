@@ -120,7 +120,8 @@ private struct AirportDetailView: View {
                 },
                 onPlanePicked: { engine.selectedEventIDs = [] },
                 onShowADS: { openWindow(id: "ads-feed") },
-                onShowOccupancy: { openWindow(id: "pattern-occupancy") }
+                onShowOccupancy: { openWindow(id: "pattern-occupancy") },
+                onShowMETAR: { openWindow(id: "metar", value: airport.icao) }
             )
             .frame(width: 300)
         }

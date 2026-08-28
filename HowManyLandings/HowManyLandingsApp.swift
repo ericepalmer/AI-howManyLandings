@@ -33,6 +33,14 @@ struct HowManyLandingsApp: App {
         .defaultSize(width: 720, height: 460)
         #endif
 
+        WindowGroup(id: "metar", for: String.self) { $station in
+            METARWindow(station: station)
+                .environment(engine)
+        }
+        #if os(macOS)
+        .defaultSize(width: 480, height: 420)
+        #endif
+
         #if os(macOS)
         Settings {
             SettingsView()

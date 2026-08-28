@@ -9,6 +9,7 @@ struct PatternTrackerView: View {
     var onPlanePicked: (() -> Void)?
     var onShowADS: (() -> Void)?
     var onShowOccupancy: (() -> Void)?
+    var onShowMETAR: (() -> Void)?
 
     private var tracked: [LandingDetector.TrackedAircraft] {
         aircraft.filter(\.appearsInTracker)
@@ -72,12 +73,21 @@ struct PatternTrackerView: View {
             Divider()
 
             VStack(spacing: 6) {
-                Button("Pattern graph") {
-                    onShowOccupancy?()
+                HStack(spacing: 6) {
+                    Button("Pattern graph") {
+                        onShowOccupancy?()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity)
+
+                    Button("METAR") {
+                        onShowMETAR?()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .frame(maxWidth: .infinity)
 
                 Button("Display ADS") {
                     onShowADS?()

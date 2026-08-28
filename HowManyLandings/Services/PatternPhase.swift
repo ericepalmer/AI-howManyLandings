@@ -9,6 +9,8 @@ import Foundation
 ///   A 360, a messy pattern, or an ADS-B gap will not invent these.
 /// - **Profile-only**: Base, Final, Flare. These depend only on heading,
 ///   AGL, speed, and geometry — never on the last labeled phase.
+/// - **Turns**: while heading is changing toward the next leg and has not
+///   arrived, keep the previous label (mid-turn ADS-B headings).
 /// - **Maneuvering**: none of the set tests matched (360, offset, or messy).
 /// - **Ground**: taxi, run-up, or parked on the surface.
 enum PatternPhase: String, Sendable, Equatable {
@@ -89,6 +91,12 @@ enum PatternClassifier {
     private static let alignTol = 22.0
     private static let perpTol = 28.0
     private static let runwayHeadingTol = 28.0
+    /// Mid-turn hold: heading must have moved, still be short of the next leg,
+    /// and not so far that the other 90° (base vs crosswind) could match.
+    private static let turnMinChangeDeg = 4.0
+    private static let turnArrivalDeg = 24.0
+    private static let turnMaxRemainingDeg = 62.0
+    private static let turnMinProgressDeg = 12.0
 
     /// - Parameter activeRunwayDirection: Field-wide active landing direction (`12`, not `12L`).
     ///   Crosswind / downwind / base use this. Final / flare use any runway and can change it.
@@ -148,6 +156,7 @@ enum PatternClassifier {
             airport: airport,
             distanceNM: distanceNM,
             heading: heading,
+            previousHeading: state.lastTrackDeg,
             agl: agl,
             speed: speed,
             vs: vs,
@@ -200,6 +209,7 @@ enum PatternClassifier {
         airport: Airport,
         distanceNM: Double,
         heading: Double?,
+        previousHeading: Double?,
         agl: Double?,
         speed: Double?,
         vs: Double?,
@@ -293,6 +303,21 @@ enum PatternClassifier {
             ) {
                 return phase
             }
+        }
+
+        // Mid-turn: heading is changing toward the *published* next leg
+        // (e.g. 070 → 120 → 160) but has not arrived yet. Keep the previous
+        // label instead of dropping to Maneuvering / Leaving.
+        let turnChosen = patternChosen ?? anyChosen
+        if let held = heldPhaseDuringTurn(
+            previous: previous,
+            heading: heading,
+            previousHeading: previousHeading,
+            chosen: turnChosen,
+            point: point,
+            agl: agl
+        ) {
+            return (held, turnChosen?.directionIdent ?? activeRunwayDirection)
         }
 
         if isLeaving(
@@ -423,6 +448,72 @@ enum PatternClassifier {
         return now.timeIntervalSince(lastTakeoffAt) <= recentTakeoffSeconds
     }
 
+    /// Keep Departure / Upwind / Crosswind / Downwind / Base while the track is
+    /// rotating toward the published next leg and has not reached that heading yet.
+    private static func heldPhaseDuringTurn(
+        previous: PatternPhase,
+        heading: Double?,
+        previousHeading: Double?,
+        chosen: RunwayApproach?,
+        point: CLLocationCoordinate2D,
+        agl: Double?
+    ) -> PatternPhase? {
+        guard let heading, let previousHeading, let chosen else { return nil }
+        guard Geo.headingDelta(previousHeading, heading) >= turnMinChangeDeg else { return nil }
+        guard let target = nextLegHeading(from: previous, approach: chosen) else { return nil }
+        let remainingBefore = Geo.headingDelta(previousHeading, target)
+        let remainingNow = Geo.headingDelta(heading, target)
+        let progress = remainingBefore - remainingNow
+        guard progress >= turnMinProgressDeg else { return nil }
+        guard remainingNow > turnArrivalDeg else { return nil }
+        guard remainingNow < turnMaxRemainingDeg else { return nil }
+        guard turnGeometryAllowsHold(previous, chosen: chosen, point: point) else { return nil }
+
+        if previous == .departure || previous == .upwind, let agl {
+            if agl >= departureMaxAGLFt, agl <= upwindMaxAGLFt { return .upwind }
+            if agl < departureMaxAGLFt { return .departure }
+        }
+        return previous
+    }
+
+    /// Only the published next heading — the opposite 90° is the other end of
+    /// the pattern (base vs crosswind) and must not keep the previous label.
+    private static func nextLegHeading(from phase: PatternPhase, approach: RunwayApproach) -> Double? {
+        let runway = approach.headingDeg
+        let right = approach.runway.usesRightTraffic(forApproachIdent: approach.ident)
+        switch phase {
+        case .departure, .upwind:
+            return Geo.normalizeHeading(runway + (right ? 90 : -90))
+        case .crosswind:
+            return Geo.normalizeHeading(runway + 180)
+        case .downwind:
+            return Geo.normalizeHeading(runway + (right ? -90 : 90))
+        case .base:
+            return Geo.normalizeHeading(runway)
+        default:
+            return nil
+        }
+    }
+
+    private static func turnGeometryAllowsHold(
+        _ phase: PatternPhase,
+        chosen: RunwayApproach,
+        point: CLLocationCoordinate2D
+    ) -> Bool {
+        let along = chosen.frame(at: point).along
+        switch phase {
+        case .departure, .upwind, .crosswind:
+            // Approach side is base / final — do not keep a departure-end label.
+            return along > 0.15
+        case .downwind:
+            return true
+        case .base:
+            return along < 0.35
+        default:
+            return false
+        }
+    }
+
     /// Active-runway parallels first; otherwise the best-matching approach for this point.
     private static func crosswindCandidates(
         patternChosen: RunwayApproach?,
@@ -477,7 +568,8 @@ enum PatternClassifier {
         guard (agl ?? 0) < 1_800 else { return false }
         guard Geo.isPerpendicular(heading, to: chosen.headingDeg, tolerance: perpTol) else { return false }
         let frame = chosen.frame(at: point)
-        return frame.along > -0.1 && abs(frame.crossRight) < 1.8
+        // Departure side only. Approach-side perpendicular is base, not crosswind.
+        return frame.along > 0.15 && abs(frame.crossRight) < 1.8
     }
 
     private static func isDownwind(
@@ -624,7 +716,9 @@ enum PatternClassifier {
             return match.0 == phase
         case .crosswind:
             guard let chosen, let heading else { return false }
+            let along = chosen.frame(at: point).along
             return Geo.isPerpendicular(heading, to: chosen.headingDeg, tolerance: 35)
+                && along > 0.15
                 && distanceNM < 2.6
                 && (agl ?? 0) < 1_900
         case .downwind:
