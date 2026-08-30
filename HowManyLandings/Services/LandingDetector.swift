@@ -66,12 +66,24 @@ struct LandingDetector: Sendable {
         /// Inferred traffic-pattern leg; `.maneuvering` until geometry is unambiguous.
         var patternPhase: PatternPhase = .maneuvering
         var patternRunwayIdent: String?
+        var patternIsApproach: Bool = false
+        var patternHeldLeg: PatternHeldLeg?
+        var patternLiberalUncertain: Bool = false
+        var patternStatusUnknown: Bool = false
         /// Clock used for visibility / coast windows (wall time live; poll time during replay).
         var asOf: Date = Date()
 
         /// Chip next to the callsign (`Ground`, `Base 27`, `Final 09`, `Maneuvering`, …).
         var patternChipText: String? {
-            patternPhase.chipText(runwayIdent: patternRunwayIdent)
+            if patternStatusUnknown || patternPhase == .ground {
+                return patternLiberalUncertain ? "Unknown?" : "Unknown"
+            }
+            return patternPhase.chipText(
+                runwayIdent: patternRunwayIdent,
+                isApproach: patternIsApproach,
+                heldLeg: patternHeldLeg,
+                liberalUncertain: patternLiberalUncertain
+            )
         }
 
         /// Lost ADS-B or left the ring, but the engagement track is still retained.
@@ -96,8 +108,47 @@ struct LandingDetector: Sendable {
             track.count >= 2
         }
 
+        /// Pattern panel: recently landed, or plane glyph within 5 NM (≤2,000 ft AGL).
+        func appearsInPatternPanel(airportElevationFt: Int) -> Bool {
+            if isRecentlyLandedForTracker { return true }
+            if snapshot.onGround || flightState?.isGround == true { return false }
+            if lastLandingAt != nil, isCoasting { return false }
+            guard showsPatternPlaneGlyph(airportElevationFt: airportElevationFt) else { return false }
+
+            let inRing = distanceNM <= Geo.patternRadiusNM
+            let offLeg = patternPhase == .maneuvering
+                || patternPhase == .leaving
+                || patternStatusUnknown
+                || patternLiberalUncertain
+
+            // Maneuvering / leaving / uncertain: ring + glyph (not strict inPattern geometry).
+            if offLeg {
+                guard inRing else { return false }
+            } else {
+                if patternPhase == .ground { return false }
+                guard inPattern else { return false }
+            }
+
+            if inRange { return true }
+            return asOf.timeIntervalSince(lastSeen) <= Geo.trackerCoastSeconds
+        }
+
+        /// Same glyph rules as the map: colored aircraft symbol, not the enroute arrow.
+        func showsPatternPlaneGlyph(airportElevationFt: Int) -> Bool {
+            if snapshot.onGround { return false }
+            if TrackPalette.isEnroute(snapshot, airportElevationFt: airportElevationFt) { return false }
+            if Geo.isSurfaceOps(
+                onGround: snapshot.onGround,
+                altitudeAGLFt: snapshot.altitudeAGLFt(airportElevationFt: airportElevationFt),
+                groundSpeedKt: snapshot.groundSpeedKt
+            ) {
+                return false
+            }
+            return true
+        }
+
         /// Pattern tracker: airborne in-pattern, plus recently landed (5 min).
-        /// Lost airborne contacts stay ≤ 5 minutes.
+        /// Lost airborne contacts stay ≤ 90 seconds.
         var appearsInTracker: Bool {
             if isRecentlyLandedForTracker { return true }
             if snapshot.onGround { return false }
@@ -143,12 +194,18 @@ struct LandingDetector: Sendable {
         self.config = configuration
     }
 
+    var trackedICAO24s: Set<String> { Set(states.keys) }
+
     mutating func ingest(
         snapshots: [AircraftSnapshot],
         airport: Airport,
         trackingRadiusNM: Double = Geo.defaultTrackingRadiusNM,
         now: Date = Date()
     ) -> (aircraft: [TrackedAircraft], purgedICAO24s: Set<String>) {
+        let snapshots = AircraftSnapshotDeduplicator.deduplicated(
+            snapshots,
+            preferredICAO24: trackedICAO24s
+        )
         var seen: Set<String> = []
         /// Prefer the final/flare aircraft closest to its threshold when several are present.
         var bestFinalScore = Double.greatestFiniteMagnitude
@@ -238,7 +295,7 @@ struct LandingDetector: Sendable {
                 Geo.distanceNM($0.coordinate, airport.coordinate) <= trackingRadiusNM
                     && now.timeIntervalSince($0.timestamp) <= Geo.recentTrailSeconds
             }
-            let distance = Geo.distanceNM(snapshot.coordinate, airport.coordinate)
+            let distance = Geo.distanceToAirfieldNM(from: snapshot.coordinate, airport: airport)
             let agl = snapshot.altitudeAGLFt(airportElevationFt: airport.elevationFt)
             let inPattern = Geo.isInPattern(
                 coordinate: snapshot.coordinate,
@@ -260,6 +317,10 @@ struct LandingDetector: Sendable {
                 inPattern: inPattern,
                 patternPhase: memory.pattern.phase,
                 patternRunwayIdent: memory.pattern.runwayIdent,
+                patternIsApproach: memory.pattern.isApproach,
+                patternHeldLeg: memory.pattern.heldLeg,
+                patternLiberalUncertain: memory.pattern.liberalUncertain,
+                patternStatusUnknown: memory.pattern.statusUnknown,
                 asOf: now
             )
         }

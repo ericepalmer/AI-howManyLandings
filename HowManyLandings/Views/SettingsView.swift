@@ -123,6 +123,7 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    LabeledContent("App", value: AppIdentity.name)
                     LabeledContent("Build", value: AppBuild.number)
                     Toggle("Click track for ADS-B dump", isOn: $debugTrackDump)
                 } header: {

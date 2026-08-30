@@ -40,16 +40,56 @@ enum PatternPhase: String, Sendable, Equatable {
         }
     }
 
-    /// Chip text next to the callsign. Runway direction when we know which end.
-    func chipText(runwayIdent: String?) -> String? {
-        let name = title
-        guard !name.isEmpty else { return nil }
-        if self == .leaving || self == .maneuvering || self == .ground { return name }
-        if let ident = runwayIdent, !ident.isEmpty {
-            return "\(name) \(RunwayApproach.directionIdent(ident))"
+    /// Chip next to callsign. `heldLeg` adds a stretch marker; `liberalUncertain` appends `?`.
+    func chipText(
+        runwayIdent: String?,
+        isApproach: Bool = false,
+        heldLeg: PatternHeldLeg? = nil,
+        liberalUncertain: Bool = false
+    ) -> String? {
+        let name: String
+        switch self {
+        case .final where isApproach: name = "Approach"
+        default: name = title
         }
-        return name
+        guard !name.isEmpty else { return nil }
+        var chip: String
+        if self == .leaving || self == .maneuvering || self == .ground {
+            chip = name
+        } else if let ident = runwayIdent, !ident.isEmpty {
+            chip = "\(name) \(RunwayApproach.directionIdent(ident))"
+        } else {
+            chip = name
+        }
+        if let heldLeg { chip += heldLeg.chipSymbol }
+        if liberalUncertain { chip += "?" }
+        return chip
     }
+}
+
+/// Marker when classification used looser leg-hold criteria (prior same leg).
+enum PatternHeldLeg: String, Sendable, Equatable {
+    case approach
+    case extendedBase
+    case wideDownwind
+
+    var chipSymbol: String {
+        switch self {
+        case .approach: return "↘"
+        case .extendedBase: return "↔"
+        case .wideDownwind: return "⇉"
+        }
+    }
+}
+
+struct PatternClassifyResult: Sendable, Equatable {
+    var phase: PatternPhase
+    var runwayIdent: String?
+    var isApproach: Bool = false
+    var heldLeg: PatternHeldLeg?
+    var liberalUncertain: Bool = false
+    /// No leg matched — show Unknown in the Maneuvering card.
+    var statusUnknown: Bool = false
 }
 
 struct PatternCircuitState: Sendable, Equatable {
@@ -63,6 +103,11 @@ struct PatternCircuitState: Sendable, Equatable {
     var lastDistanceNM: Double?
     var lastTrackDeg: Double?
     var lastSignedCrossNM: Double?
+    /// Straight-in / instrument segment beyond close final (chip shows Approach).
+    var isApproach: Bool = false
+    var heldLeg: PatternHeldLeg?
+    var liberalUncertain: Bool = false
+    var statusUnknown: Bool = false
 
     mutating func reset() {
         self = PatternCircuitState()
@@ -79,7 +124,7 @@ enum PatternClassifier {
     /// Past the departure end — extended downwinds for traffic (≈1 NM beyond prior limit).
     private static let downwindAlongPastFarNM = 1.8
     /// Departure: runway heading, departure side, within this lateral distance, AGL below band.
-    private static let departureLateralMaxNM = 0.5
+    private static let departureLateralMaxNM = 0.65
     private static let departureMaxAGLFt = 500.0
     /// Upwind: same corridor as departure, AGL from 500 through 1,250.
     private static let upwindMaxAGLFt = 1_250.0
@@ -104,6 +149,21 @@ enum PatternClassifier {
     private static let turnArrivalDeg = 24.0
     private static let turnMaxRemainingDeg = 62.0
     private static let turnMinProgressDeg = 12.0
+    /// Extra tolerance while holding Crosswind / Downwind / Base / Final.
+    private static let legHoldStretch = 1.35
+    /// Bonus when within 4 NM and ≤ 1,200 ft AGL for pattern-leg matching.
+    private static let liberalCriteriaBoost = 1.20
+    /// Tier 3 downwind: wider lateral than generic liberal (wide / offset downwinds).
+    private static let liberalDownwindStretch = 1.50
+    private static let longFinalNearAlongNM = -0.6
+    /// Outermost Approach segment (~ILS FAF is often 4–7 NM; we allow up to 6 NM).
+    private static let longFinalFarAlongNM = -6.0
+    /// ILS glideslope is typically 3° (~300 ft/NM). Band allows CAT-I style and slightly steeper.
+    private static let longFinalGlideSlopeMinDeg = 2.2
+    private static let longFinalGlideSlopeMaxDeg = 3.6
+    /// Half-angle cone from runway centerline for lateral offset on Approach.
+    private static let longFinalConeDeg = 10.0
+    private static let feetPerNM = Geo.metersPerNauticalMile * Geo.feetPerMeter
 
     /// - Parameter activeRunwayDirection: Field-wide active landing direction (`12`, not `12L`).
     ///   Crosswind / downwind / base use this. Final / flare use any runway and can change it.
@@ -128,7 +188,7 @@ enum PatternClassifier {
         }
 
         let point = snapshot.coordinate
-        let distanceNM = Geo.distanceNM(point, airport.coordinate)
+        let distanceNM = Geo.distanceToAirfieldNM(from: point, airport: airport)
         let heading = inferredTrack(snapshot: snapshot, track: track)
         let speed = snapshot.groundSpeedKt
         let vs = snapshot.verticalRateFPM
@@ -174,13 +234,18 @@ enum PatternClassifier {
             chosenAny: chosenAny,
             chosenActive: chosenActive,
             activeRunwayDirection: activeRunwayDirection,
-            approaches: approaches
+            approaches: approaches,
+            category: snapshot.category
         )
 
-        state.phase = next.0
-        if let ident = next.1 {
+        state.phase = next.phase
+        state.isApproach = next.isApproach
+        state.heldLeg = next.heldLeg
+        state.liberalUncertain = next.liberalUncertain
+        state.statusUnknown = next.statusUnknown
+        if let ident = next.runwayIdent {
             state.runwayIdent = RunwayApproach.directionIdent(ident)
-        } else if next.0 == .maneuvering,
+        } else if next.phase == .maneuvering,
                   !isRecentTakeoff(lastTakeoffAt: lastTakeoffAt, now: now) {
             state.runwayIdent = nil
         }
@@ -207,6 +272,61 @@ enum PatternClassifier {
 
     // MARK: - Classify
 
+    private static func legStretchModifiers(
+        previous: PatternPhase,
+        leg: PatternPhase,
+        liberal: Bool
+    ) -> (stretch: Double, legHold: Bool, liberalBoost: Bool) {
+        if previous == leg { return (legHoldStretch, true, false) }
+        if liberal { return (liberalCriteriaBoost, false, true) }
+        return (1.0, false, false)
+    }
+
+    private static func heldLegMarker(phase: PatternPhase, isApproach: Bool) -> PatternHeldLeg? {
+        switch phase {
+        case .final where isApproach: return .approach
+        case .base: return .extendedBase
+        case .downwind: return .wideDownwind
+        default: return nil
+        }
+    }
+
+    private static func classifyResult(
+        phase: PatternPhase,
+        runway: String?,
+        isApproach: Bool = false,
+        legHold: Bool = false,
+        liberalBoost: Bool = false,
+        statusUnknown: Bool = false
+    ) -> PatternClassifyResult {
+        PatternClassifyResult(
+            phase: phase,
+            runwayIdent: runway,
+            isApproach: isApproach,
+            heldLeg: legHold ? heldLegMarker(phase: phase, isApproach: isApproach) : nil,
+            liberalUncertain: liberalBoost,
+            statusUnknown: statusUnknown
+        )
+    }
+
+    /// Max GS for approach / final matching by ADS-B emitter category.
+    private static func maxApproachSpeedKt(category: AircraftCategory) -> Double {
+        switch category {
+        case .light, .ultralight, .glider, .lighterThanAir:
+            return 130
+        case .heavy, .space:
+            return 180
+        case .small, .large, .highVortexLarge, .highPerformance, .rotorcraft,
+             .unknown, .noInfo, .reserved, .uav, .emergencyVehicle, .serviceVehicle,
+             .pointObstacle, .clusterObstacle, .lineObstacle, .parachutist:
+            return 150
+        }
+    }
+
+    private static func approachSpeedOk(speed: Double?, slowing: Bool, category: AircraftCategory) -> Bool {
+        slowing || (speed ?? 999) < maxApproachSpeedKt(category: category)
+    }
+
     private static func classify(
         previous: PatternPhase,
         sawCrosswind: Bool,
@@ -227,21 +347,56 @@ enum PatternClassifier {
         chosenAny: RunwayApproach?,
         chosenActive: RunwayApproach?,
         activeRunwayDirection: String?,
-        approaches: [RunwayApproach]
-    ) -> (PatternPhase, String?) {
+        approaches: [RunwayApproach],
+        category: AircraftCategory
+    ) -> PatternClassifyResult {
         let patternChosen = chosenActive
         let anyChosen = chosenAny
+        let liberal = Geo.isNearFieldLiberal(distanceNM: distanceNM, altitudeAGLFt: agl)
 
-        // MARK: Profile-only Final / Flare — any runway (altitude, speed, location).
-        // These set / switch the field active runway when LandingDetector observes them.
         if let anyChosen, isFlare(chosen: anyChosen, point: point, heading: heading, agl: agl, speed: speed) {
-            return (.flare, anyChosen.directionIdent)
-        }
-        if let anyChosen, isFinal(chosen: anyChosen, point: point, heading: heading, agl: agl, slowing: slowing, descending: descending, speed: speed) {
-            return (.final, anyChosen.directionIdent)
+            return classifyResult(phase: .flare, runway: anyChosen.directionIdent)
         }
 
-        // MARK: Base — locked to active runway direction.
+        let finalMods = legStretchModifiers(previous: previous, leg: .final, liberal: liberal)
+        if let anyChosen, isLongFinal(
+            chosen: anyChosen,
+            point: point,
+            heading: heading,
+            agl: agl,
+            speed: speed,
+            category: category,
+            slowing: slowing,
+            stretch: finalMods.stretch
+        ) {
+            return classifyResult(
+                phase: .final,
+                runway: anyChosen.directionIdent,
+                isApproach: true,
+                legHold: finalMods.legHold,
+                liberalBoost: finalMods.liberalBoost
+            )
+        }
+        if let anyChosen, isFinal(
+            chosen: anyChosen,
+            point: point,
+            heading: heading,
+            agl: agl,
+            slowing: slowing,
+            descending: descending,
+            speed: speed,
+            category: category,
+            stretch: finalMods.stretch
+        ) {
+            return classifyResult(
+                phase: .final,
+                runway: anyChosen.directionIdent,
+                legHold: finalMods.legHold,
+                liberalBoost: finalMods.liberalBoost
+            )
+        }
+
+        let baseMods = legStretchModifiers(previous: previous, leg: .base, liberal: liberal)
         if let patternChosen, isBase(
             chosen: patternChosen,
             point: point,
@@ -249,16 +404,45 @@ enum PatternClassifier {
             agl: agl,
             slowing: slowing,
             speed: speed,
-            previousSignedCross: previous == .base ? previousSignedCross : nil
+            previousSignedCross: previous == .base ? previousSignedCross : nil,
+            stretch: baseMods.stretch
         ) {
-            return (.base, patternChosen.directionIdent)
+            return classifyResult(
+                phase: .base,
+                runway: patternChosen.directionIdent,
+                legHold: baseMods.legHold,
+                liberalBoost: baseMods.liberalBoost
+            )
         }
 
-        // MARK: Sequential — Departure → Upwind → Crosswind → Downwind.
+        let climbOut = isClimbOutContext(
+            previous: previous,
+            lastTakeoffAt: lastTakeoffAt,
+            now: now
+        )
+        if climbOut,
+           previous != .crosswind, previous != .downwind, previous != .base,
+           let phase = matchDepartureOrUpwind(
+               approaches: approaches,
+               patternChosen: patternChosen,
+               anyChosen: anyChosen,
+               point: point,
+               heading: heading,
+               agl: agl,
+               stretch: legHoldStretch
+           ) {
+            return classifyResult(phase: phase.0, runway: phase.1)
+        }
 
-        // Crosswind after Departure / Upwind (or while already on Crosswind).
-        // After a recent takeoff, also accept Crosswind from a brief Maneuvering
-        // chip during the climb-out turn (heading leaves the upwind corridor first).
+        let crosswindMods: (stretch: Double, legHold: Bool, liberalBoost: Bool) = {
+            if previous == .crosswind {
+                return (legHoldStretch, true, false)
+            }
+            if liberal {
+                return (liberalCriteriaBoost, false, true)
+            }
+            return (1.0, false, false)
+        }()
         let sequentialCrosswind = previous == .departure || previous == .upwind || previous == .crosswind
         let climbOutCrosswind = previous == .maneuvering
             && isRecentTakeoff(lastTakeoffAt: lastTakeoffAt, now: now)
@@ -273,48 +457,75 @@ enum PatternClassifier {
             point: point,
             heading: heading,
             agl: agl,
-            distanceNM: distanceNM
+            distanceNM: distanceNM,
+            stretch: crosswindMods.stretch
            ) {
-            return (.crosswind, crosswind.directionIdent)
+            return classifyResult(
+                phase: .crosswind,
+                runway: crosswind.directionIdent,
+                legHold: crosswindMods.legHold,
+                liberalBoost: crosswindMods.liberalBoost
+            )
         }
 
+        let downwindMods = legStretchModifiers(previous: previous, leg: .downwind, liberal: liberal)
         if sawCrosswind,
            let patternChosen,
-           isDownwind(chosen: patternChosen, point: point, heading: heading, agl: agl) {
-            return (.downwind, patternChosen.directionIdent)
+           isDownwind(
+            chosen: patternChosen,
+            point: point,
+            heading: heading,
+            agl: agl,
+            stretch: downwindMods.stretch
+           ) {
+            return classifyResult(
+                phase: .downwind,
+                runway: patternChosen.directionIdent,
+                legHold: downwindMods.legHold,
+                liberalBoost: downwindMods.liberalBoost
+            )
         }
 
-        // Active-runway downwind — no prior Crosswind required. Catches extended
-        // downwinds that never got a sequential Crosswind chip before Leaving.
+        let activeDWMods = liberal
+            ? (liberalDownwindStretch, false, true)
+            : (1.0, false, false)
         if let activeDW = activeRunwayDownwind(
             approaches: approaches,
             activeRunwayDirection: activeRunwayDirection,
             point: point,
             heading: heading,
             agl: agl,
-            distanceNM: distanceNM
+            distanceNM: distanceNM,
+            stretch: activeDWMods.0
         ) {
-            return (.downwind, activeDW.directionIdent)
+            return classifyResult(
+                phase: .downwind,
+                runway: activeDW.directionIdent,
+                legHold: false,
+                liberalBoost: activeDWMods.2
+            )
         }
 
-        // Departure / Upwind corridor: runway heading, departure side, ≤ 0.5 NM.
-        // AGL < 500 → Departure; 500…1250 → Upwind; above that or outside → Maneuvering
-        // (unless Crosswind already matched above).
         if previous != .crosswind, previous != .downwind, previous != .base {
-            let corridorChosen = patternChosen ?? anyChosen
-            if let phase = departureOrUpwind(
-                chosen: corridorChosen,
+            let stretch = departureStretch(
+                previous: previous,
+                lastTakeoffAt: lastTakeoffAt,
+                now: now,
+                liberal: liberal
+            )
+            if let phase = matchDepartureOrUpwind(
+                approaches: approaches,
+                patternChosen: patternChosen,
+                anyChosen: anyChosen,
                 point: point,
                 heading: heading,
-                agl: agl
+                agl: agl,
+                stretch: stretch
             ) {
-                return phase
+                return classifyResult(phase: phase.0, runway: phase.1)
             }
         }
 
-        // Mid-turn: heading is changing toward the *published* next leg
-        // (e.g. 070 → 120 → 160) but has not arrived yet. Keep the previous
-        // label instead of dropping to Maneuvering / Leaving.
         let turnChosen = patternChosen ?? anyChosen
         if let held = heldPhaseDuringTurn(
             previous: previous,
@@ -324,7 +535,31 @@ enum PatternClassifier {
             point: point,
             agl: agl
         ) {
-            return (held, turnChosen?.directionIdent ?? activeRunwayDirection)
+            return classifyResult(
+                phase: held,
+                runway: turnChosen?.directionIdent ?? activeRunwayDirection
+            )
+        }
+
+        if let agl, agl > Geo.patternHighAGLFt {
+            if isLeaving(
+                previous: previous,
+                point: point,
+                airport: airport,
+                distanceNM: distanceNM,
+                heading: heading,
+                previousDistanceNM: previousDistanceNM,
+                chosen: anyChosen,
+                activeRunwayDirection: activeRunwayDirection,
+                approaches: approaches,
+                agl: agl
+            ) {
+                return classifyResult(
+                    phase: .leaving,
+                    runway: anyChosen?.directionIdent ?? activeRunwayDirection
+                )
+            }
+            return classifyResult(phase: .maneuvering, runway: nil)
         }
 
         if isLeaving(
@@ -339,7 +574,10 @@ enum PatternClassifier {
             approaches: approaches,
             agl: agl
         ) {
-            return (.leaving, anyChosen?.directionIdent ?? activeRunwayDirection)
+            return classifyResult(
+                phase: .leaving,
+                runway: anyChosen?.directionIdent ?? activeRunwayDirection
+            )
         }
 
         let holdChosen = patternChosen ?? anyChosen
@@ -354,12 +592,52 @@ enum PatternClassifier {
             sawCrosswind: sawCrosswind,
             speed: speed,
             requiresActive: previous == .crosswind || previous == .downwind || previous == .base,
-            hasActive: patternChosen != nil
+            hasActive: patternChosen != nil,
+            category: category,
+            slowing: slowing,
+            descending: descending
         ) {
-            return (previous, holdChosen?.directionIdent ?? activeRunwayDirection)
+            let approachHold = previous == .final
+                && holdChosen.map {
+                    isLongFinal(
+                        chosen: $0,
+                        point: point,
+                        heading: heading,
+                        agl: agl,
+                        speed: speed,
+                        category: category,
+                        slowing: true,
+                        stretch: legHoldStretch
+                    )
+                } == true
+            return PatternClassifyResult(
+                phase: previous,
+                runwayIdent: holdChosen?.directionIdent ?? activeRunwayDirection,
+                isApproach: approachHold,
+                heldLeg: heldLegMarker(phase: previous, isApproach: approachHold),
+                liberalUncertain: false
+            )
         }
 
-        return (.maneuvering, nil)
+        if let liberalMatch = liberalPatternMatch(
+            approaches: approaches,
+            activeRunwayDirection: activeRunwayDirection,
+            patternChosen: patternChosen,
+            anyChosen: anyChosen,
+            point: point,
+            heading: heading,
+            agl: agl,
+            distanceNM: distanceNM,
+            speed: speed,
+            slowing: slowing,
+            descending: descending,
+            sawCrosswind: sawCrosswind,
+            category: category
+        ) {
+            return liberalMatch
+        }
+
+        return classifyResult(phase: .maneuvering, runway: nil, statusUnknown: true)
     }
 
     // MARK: - Phase tests
@@ -387,16 +665,74 @@ enum PatternClassifier {
         agl: Double?,
         slowing: Bool,
         descending: Bool,
-        speed: Double?
+        speed: Double?,
+        category: AircraftCategory,
+        stretch: Double = 1.0
     ) -> Bool {
         guard let agl, agl < baseMaxAGLFt else { return false }
-        guard let heading, Geo.isAbout(heading, chosen.headingDeg, tolerance: alignTol) else { return false }
+        guard let heading, Geo.isAbout(heading, chosen.headingDeg, tolerance: alignTol * stretch) else { return false }
         let frame = chosen.frame(at: point)
-        guard abs(frame.crossRight) < 0.22 else { return false }
-        guard frame.along > -2.8, frame.along < 0.20 else { return false }
-        let slowEnough = slowing || (speed ?? 999) < 110
+        guard abs(frame.crossRight) < 0.22 * stretch else { return false }
+        guard frame.along > longFinalNearAlongNM / stretch, frame.along < 0.20 * stretch else { return false }
+        guard approachSpeedOk(speed: speed, slowing: slowing, category: category) else { return false }
         let lowEnough = descending || agl < 600
-        return slowEnough && lowEnough
+        return lowEnough
+    }
+
+    private static func isLongFinal(
+        chosen: RunwayApproach,
+        point: CLLocationCoordinate2D,
+        heading: Double?,
+        agl: Double?,
+        speed: Double?,
+        category: AircraftCategory,
+        slowing: Bool,
+        stretch: Double = 1.0
+    ) -> Bool {
+        guard let agl, let heading else { return false }
+        let frame = chosen.frame(at: point)
+        guard let distNM = longFinalDistanceNM(frame: frame) else { return false }
+        guard distNM >= (-longFinalNearAlongNM) / stretch,
+              distNM <= (-longFinalFarAlongNM) * stretch else { return false }
+
+        guard Geo.isAbout(heading, chosen.headingDeg, tolerance: alignTol * stretch) else { return false }
+
+        let maxCross = longFinalMaxCrossNM(distanceNM: distNM, coneDeg: longFinalConeDeg, stretch: stretch)
+        guard abs(frame.crossRight) <= maxCross else { return false }
+
+        let glideBand = longFinalGlideSlopeAGLBand(
+            distanceNM: distNM,
+            minDeg: longFinalGlideSlopeMinDeg,
+            maxDeg: longFinalGlideSlopeMaxDeg,
+            stretch: stretch
+        )
+        guard agl >= glideBand.min, agl <= glideBand.max else { return false }
+
+        return approachSpeedOk(speed: speed, slowing: slowing, category: category)
+    }
+
+    /// Horizontal distance before the threshold along the runway axis (approach side only).
+    private static func longFinalDistanceNM(frame: (along: Double, crossRight: Double)) -> Double? {
+        guard frame.along < 0 else { return nil }
+        return -frame.along
+    }
+
+    /// Expected AGL band from glide slope 2.2°–3.6° at this distance; stretch widens the band.
+    private static func longFinalGlideSlopeAGLBand(
+        distanceNM: Double,
+        minDeg: Double,
+        maxDeg: Double,
+        stretch: Double
+    ) -> (min: Double, max: Double) {
+        let distFt = distanceNM * feetPerNM
+        let minAlt = distFt * tan(minDeg * .pi / 180) / stretch
+        let maxAlt = distFt * tan(maxDeg * .pi / 180) * stretch
+        return (minAlt, maxAlt)
+    }
+
+    /// Max lateral offset for a 10° cone from the runway at this downwind distance.
+    private static func longFinalMaxCrossNM(distanceNM: Double, coneDeg: Double, stretch: Double) -> Double {
+        distanceNM * tan((coneDeg * stretch) * .pi / 180)
     }
 
     private static func isBase(
@@ -406,48 +742,109 @@ enum PatternClassifier {
         agl: Double?,
         slowing: Bool,
         speed: Double?,
-        previousSignedCross: Double?
+        previousSignedCross: Double?,
+        stretch: Double = 1.0
     ) -> Bool {
         guard let agl, agl < baseMaxAGLFt, agl > flareAGLFt else { return false }
         guard let heading else { return false }
         let frame = chosen.frame(at: point)
         let cross = abs(frame.crossRight)
-        guard cross >= 0.20, cross <= 1.70 else { return false }
-        guard frame.along > -2.8, frame.along < 0.25 else { return false }
+        guard cross >= 0.20 / stretch, cross <= 1.70 * stretch else { return false }
+        guard frame.along > -2.8 / stretch, frame.along < 0.25 * stretch else { return false }
         let towardHeading = chosen.headingDeg + (frame.crossRight >= 0 ? -90 : 90)
-        let onBaseHeading = Geo.isAbout(heading, towardHeading, tolerance: perpTol)
-            || Geo.isPerpendicular(heading, to: chosen.headingDeg, tolerance: perpTol)
+        let onBaseHeading = Geo.isAbout(heading, towardHeading, tolerance: perpTol * stretch)
+            || Geo.isPerpendicular(heading, to: chosen.headingDeg, tolerance: perpTol * stretch)
         guard onBaseHeading else { return false }
         let slowEnough = slowing || (speed ?? 999) < 95
         guard slowEnough else { return false }
-        if let previousSignedCross, abs(frame.crossRight) > abs(previousSignedCross) + 0.12 {
+        if let previousSignedCross, abs(frame.crossRight) > abs(previousSignedCross) + 0.12 / stretch {
             return false
         }
         return true
     }
 
-    /// Runway-heading climb-out on the departure side within ½ NM.
-    /// AGL < 500 → Departure; 500…1250 → Upwind; above 1250 or outside corridor → nil (Maneuvering).
+    /// Runway-heading climb-out on the departure side within the lateral corridor.
+    /// AGL < 500 → Departure; 500…1250 → Upwind; above band or outside corridor → nil.
     private static func departureOrUpwind(
         chosen: RunwayApproach?,
         point: CLLocationCoordinate2D,
         heading: Double?,
-        agl: Double?
+        agl: Double?,
+        stretch: Double = 1.0
     ) -> (PatternPhase, String?)? {
         guard let chosen, let heading, let agl, agl >= 0 else { return nil }
-        guard Geo.isAbout(heading, chosen.headingDeg, tolerance: runwayHeadingTol) else { return nil }
-        let lateral = chosen.distanceToRunwayNM(from: point)
-        guard lateral <= departureLateralMaxNM else { return nil }
+        guard Geo.isAbout(heading, chosen.headingDeg, tolerance: runwayHeadingTol * stretch) else { return nil }
         let frame = chosen.frame(at: point)
+        let lateral = abs(frame.crossRight)
+        guard lateral <= departureLateralMaxNM * stretch else { return nil }
         // Departure / upwind side: past the landing threshold along runway heading (not on final).
-        guard frame.along > -0.1 else { return nil }
+        guard frame.along > -0.15 / stretch else { return nil }
+        let upwindMax = upwindMaxAGLFt + (stretch > 1 ? 250 : 0)
         if agl < departureMaxAGLFt {
             return (.departure, chosen.directionIdent)
         }
-        if agl <= upwindMaxAGLFt {
+        if agl <= upwindMax {
             return (.upwind, chosen.directionIdent)
         }
-        // Above 1,250 AGL in the corridor → Maneuvering.
+        return nil
+    }
+
+    private static func isClimbOutContext(
+        previous: PatternPhase,
+        lastTakeoffAt: Date?,
+        now: Date
+    ) -> Bool {
+        isRecentTakeoff(lastTakeoffAt: lastTakeoffAt, now: now)
+            || previous == .ground
+            || previous == .departure
+            || previous == .upwind
+    }
+
+    private static func departureStretch(
+        previous: PatternPhase,
+        lastTakeoffAt: Date?,
+        now: Date,
+        liberal: Bool
+    ) -> Double {
+        if isClimbOutContext(previous: previous, lastTakeoffAt: lastTakeoffAt, now: now) {
+            return legHoldStretch
+        }
+        if liberal { return liberalCriteriaBoost }
+        return 1.0
+    }
+
+    /// Match climb-out on any runway aligned with the track, not only the active pattern runway.
+    private static func matchDepartureOrUpwind(
+        approaches: [RunwayApproach],
+        patternChosen: RunwayApproach?,
+        anyChosen: RunwayApproach?,
+        point: CLLocationCoordinate2D,
+        heading: Double?,
+        agl: Double?,
+        stretch: Double
+    ) -> (PatternPhase, String?)? {
+        guard let heading else { return nil }
+        var candidates: [RunwayApproach] = []
+        if let patternChosen { candidates.append(patternChosen) }
+        if let anyChosen, !candidates.contains(where: { $0.ident == anyChosen.ident }) {
+            candidates.append(anyChosen)
+        }
+        for approach in approaches where !candidates.contains(where: { $0.ident == approach.ident }) {
+            if Geo.isAbout(heading, approach.headingDeg, tolerance: runwayHeadingTol * stretch) {
+                candidates.append(approach)
+            }
+        }
+        for approach in candidates {
+            if let match = departureOrUpwind(
+                chosen: approach,
+                point: point,
+                heading: heading,
+                agl: agl,
+                stretch: stretch
+            ) {
+                return match
+            }
+        }
         return nil
     }
 
@@ -543,7 +940,8 @@ enum PatternClassifier {
         point: CLLocationCoordinate2D,
         heading: Double?,
         agl: Double?,
-        distanceNM: Double
+        distanceNM: Double,
+        stretch: Double = 1.0
     ) -> RunwayApproach? {
         var best: RunwayApproach?
         var bestScore = -1.0
@@ -553,7 +951,8 @@ enum PatternClassifier {
                 point: point,
                 heading: heading,
                 agl: agl,
-                distanceNM: distanceNM
+                distanceNM: distanceNM,
+                stretch: stretch
             ) else { continue }
             let score = 8.0 / (1 + approach.distanceToRunwayNM(from: point) * 2)
             if score > bestScore {
@@ -569,35 +968,44 @@ enum PatternClassifier {
         point: CLLocationCoordinate2D,
         heading: Double?,
         agl: Double?,
-        distanceNM: Double
+        distanceNM: Double,
+        stretch: Double = 1.0
     ) -> Bool {
         guard let heading else { return false }
-        guard distanceNM < 2.4 else { return false }
-        guard (agl ?? 0) < 1_800 else { return false }
-        guard Geo.isPerpendicular(heading, to: chosen.headingDeg, tolerance: perpTol) else { return false }
+        guard distanceNM < 2.4 * stretch else { return false }
+        guard (agl ?? 0) < 1_800 + (stretch > 1 ? 250 : 0) else { return false }
+        guard Geo.isPerpendicular(heading, to: chosen.headingDeg, tolerance: perpTol * stretch) else {
+            return false
+        }
         let frame = chosen.frame(at: point)
         // Departure side only. Approach-side perpendicular is base, not crosswind.
-        return frame.along > 0.15 && abs(frame.crossRight) < 1.8
+        return frame.along > 0.15 / stretch && abs(frame.crossRight) < 1.8 * stretch
     }
 
     private static func isDownwind(
         chosen: RunwayApproach,
         point: CLLocationCoordinate2D,
         heading: Double?,
-        agl: Double?
+        agl: Double?,
+        stretch: Double = 1.0
     ) -> Bool {
         guard let heading else { return false }
-        guard (agl ?? 2_000) < 1_800 else { return false }
+        guard (agl ?? 2_000) < 1_800 + (stretch > 1 ? 300 : 0) else { return false }
         let opposite = Geo.normalizeHeading(chosen.headingDeg + 180)
-        guard Geo.isAbout(heading, opposite, tolerance: 25) else { return false }
-        let lateral = chosen.distanceToRunwayNM(from: point)
-        guard lateral >= downwindMinNM, lateral <= downwindMaxNM else { return false }
+        guard Geo.isAbout(heading, opposite, tolerance: 25 * stretch) else { return false }
         let frame = chosen.frame(at: point)
-        return isDownwindAlongRange(chosen: chosen, along: frame.along)
+        let lateral = abs(frame.crossRight)
+        guard lateral >= downwindMinNM / stretch, lateral <= downwindMaxNM * stretch else { return false }
+        return isDownwindAlongRange(chosen: chosen, along: frame.along, stretch: stretch)
     }
 
-    private static func isDownwindAlongRange(chosen: RunwayApproach, along: Double) -> Bool {
-        along > -downwindAlongBehindNM && along < chosen.lengthNM + downwindAlongPastFarNM
+    private static func isDownwindAlongRange(
+        chosen: RunwayApproach,
+        along: Double,
+        stretch: Double = 1.0
+    ) -> Bool {
+        along > -downwindAlongBehindNM * stretch
+            && along < chosen.lengthNM + downwindAlongPastFarNM * stretch
     }
 
     private static func isStretchingAway(distanceNM: Double, previousDistanceNM: Double?) -> Bool {
@@ -617,12 +1025,13 @@ enum PatternClassifier {
         point: CLLocationCoordinate2D,
         heading: Double?,
         agl: Double?,
-        distanceNM: Double
+        distanceNM: Double,
+        stretch: Double = 1.0
     ) -> RunwayApproach? {
         guard let activeRunwayDirection, let heading, let agl else { return nil }
-        guard distanceNM <= activeDownwindMaxFieldNM else { return nil }
-        let minAGL = patternAltitudeAGLFt - patternAltitudeBelowFt
-        let maxAGL = patternAltitudeAGLFt + patternAltitudeAboveFt
+        guard distanceNM <= activeDownwindMaxFieldNM * stretch else { return nil }
+        let minAGL = patternAltitudeAGLFt - patternAltitudeBelowFt - (stretch > 1 ? 200 : 0)
+        let maxAGL = patternAltitudeAGLFt + patternAltitudeAboveFt + (stretch > 1 ? 300 : 0)
         guard agl >= minAGL, agl <= maxAGL else { return nil }
 
         let candidates = approaches.filter { $0.directionIdent == activeRunwayDirection }
@@ -632,14 +1041,14 @@ enum PatternClassifier {
         var bestScore = Double.greatestFiniteMagnitude
         for approach in candidates {
             let opposite = Geo.normalizeHeading(approach.headingDeg + 180)
-            guard Geo.isAbout(heading, opposite, tolerance: 25) else { continue }
+            guard Geo.isAbout(heading, opposite, tolerance: 25 * stretch) else { continue }
             let frame = approach.frame(at: point)
             let lateral = abs(frame.crossRight)
-            guard lateral >= downwindMinNM, lateral <= downwindMaxNM else { continue }
+            guard lateral >= downwindMinNM / stretch, lateral <= downwindMaxNM * stretch else { continue }
             let rightTraffic = approach.runway.usesRightTraffic(forApproachIdent: approach.ident)
             let onPatternSide = rightTraffic ? frame.crossRight > 0.05 : frame.crossRight < -0.05
             guard onPatternSide else { continue }
-            guard isDownwindAlongRange(chosen: approach, along: frame.along) else { continue }
+            guard isDownwindAlongRange(chosen: approach, along: frame.along, stretch: stretch) else { continue }
             let ideal = TrafficPattern.downwindOffsetNM
             let score = abs(lateral - ideal)
             if score < bestScore {
@@ -656,7 +1065,8 @@ enum PatternClassifier {
         point: CLLocationCoordinate2D,
         heading: Double?,
         agl: Double?,
-        distanceNM: Double
+        distanceNM: Double,
+        stretch: Double = 1.0
     ) -> Bool {
         activeRunwayDownwind(
             approaches: [chosen],
@@ -664,7 +1074,8 @@ enum PatternClassifier {
             point: point,
             heading: heading,
             agl: agl,
-            distanceNM: distanceNM
+            distanceNM: distanceNM,
+            stretch: stretch
         ) != nil
     }
 
@@ -712,8 +1123,8 @@ enum PatternClassifier {
             return true
         }
         if previous == .downwind, let chosen {
-            let lateral = chosen.distanceToRunwayNM(from: point)
-            if lateral > downwindMaxNM + 0.2, headingAway { return true }
+            let lateral = abs(chosen.frame(at: point).crossRight)
+            if lateral > downwindMaxNM * liberalDownwindStretch + 0.15, headingAway { return true }
         }
         return distanceNM > 3.2 && headingAway
     }
@@ -729,7 +1140,10 @@ enum PatternClassifier {
         sawCrosswind: Bool,
         speed: Double?,
         requiresActive: Bool,
-        hasActive: Bool
+        hasActive: Bool,
+        category: AircraftCategory,
+        slowing: Bool,
+        descending: Bool
     ) -> Bool {
         if requiresActive, !hasActive { return false }
         switch phase {
@@ -742,16 +1156,17 @@ enum PatternClassifier {
                 chosen: chosen,
                 point: point,
                 heading: heading,
-                agl: agl
+                agl: agl,
+                stretch: legHoldStretch
             ) else { return false }
             return match.0 == phase
         case .crosswind:
             guard let chosen, let heading else { return false }
             let along = chosen.frame(at: point).along
-            return Geo.isPerpendicular(heading, to: chosen.headingDeg, tolerance: 35)
-                && along > 0.15
-                && distanceNM < 2.6
-                && (agl ?? 0) < 1_900
+            return Geo.isPerpendicular(heading, to: chosen.headingDeg, tolerance: perpTol * legHoldStretch)
+                && along > 0.15 / legHoldStretch
+                && distanceNM < 2.6 * legHoldStretch
+                && (agl ?? 0) < 1_900 + (legHoldStretch > 1 ? 200 : 0)
         case .downwind:
             guard let chosen else { return false }
             if isActiveRunwayDownwindMatch(
@@ -759,16 +1174,30 @@ enum PatternClassifier {
                 point: point,
                 heading: heading,
                 agl: agl,
-                distanceNM: distanceNM
+                distanceNM: distanceNM,
+                stretch: legHoldStretch
             ) {
                 return true
             }
             guard sawCrosswind else { return false }
-            let lateral = chosen.distanceToRunwayNM(from: point)
-            return isDownwind(chosen: chosen, point: point, heading: heading, agl: agl)
-                || (lateral >= downwindMinNM && lateral <= downwindMaxNM
-                    && isDownwindAlongRange(chosen: chosen, along: chosen.frame(at: point).along)
-                    && heading.map { Geo.isAbout($0, chosen.headingDeg + 180, tolerance: 30) } == true)
+            let lateral = abs(chosen.frame(at: point).crossRight)
+            return isDownwind(
+                chosen: chosen,
+                point: point,
+                heading: heading,
+                agl: agl,
+                stretch: legHoldStretch
+            )
+                || (lateral >= downwindMinNM / legHoldStretch
+                    && lateral <= downwindMaxNM * legHoldStretch
+                    && isDownwindAlongRange(
+                        chosen: chosen,
+                        along: chosen.frame(at: point).along,
+                        stretch: legHoldStretch
+                    )
+                    && heading.map {
+                        Geo.isAbout($0, chosen.headingDeg + 180, tolerance: 30 * legHoldStretch)
+                    } == true)
         case .base:
             guard let chosen else { return false }
             let frame = chosen.frame(at: point)
@@ -779,15 +1208,34 @@ enum PatternClassifier {
                 agl: agl,
                 slowing: true,
                 speed: speed,
-                previousSignedCross: nil
-            ) || ((agl ?? 0) < 1_100 && frame.along < 0.4 && abs(frame.crossRight) > 0.15)
+                previousSignedCross: nil,
+                stretch: legHoldStretch
+            ) || ((agl ?? 0) < 1_100 + (legHoldStretch > 1 ? 150 : 0)
+                && frame.along < 0.4 * legHoldStretch
+                && abs(frame.crossRight) > 0.15 / legHoldStretch)
         case .final:
             guard let chosen else { return false }
-            let frame = chosen.frame(at: point)
-            return abs(frame.crossRight) < 0.40
-                && frame.along > -3.2
-                && frame.along < 0.35
-                && (agl ?? 0) < 1_200
+            return isFinal(
+                chosen: chosen,
+                point: point,
+                heading: heading,
+                agl: agl,
+                slowing: slowing,
+                descending: descending,
+                speed: speed,
+                category: category,
+                stretch: legHoldStretch
+            )
+                || isLongFinal(
+                    chosen: chosen,
+                    point: point,
+                    heading: heading,
+                    agl: agl,
+                    speed: speed,
+                    category: category,
+                    slowing: slowing,
+                    stretch: legHoldStretch
+                )
         case .flare:
             guard let chosen else { return false }
             return isFlare(chosen: chosen, point: point, heading: heading, agl: agl, speed: speed)
@@ -801,6 +1249,108 @@ enum PatternClassifier {
                     || isStretchingAway(distanceNM: distanceNM, previousDistanceNM: previousDistanceNM)
                     || distanceNM > leavingFieldNM)
         }
+    }
+
+  /// Last-chance pattern match for low, near-field tracks before Maneuvering.
+    private static func liberalPatternMatch(
+        approaches: [RunwayApproach],
+        activeRunwayDirection: String?,
+        patternChosen: RunwayApproach?,
+        anyChosen: RunwayApproach?,
+        point: CLLocationCoordinate2D,
+        heading: Double?,
+        agl: Double?,
+        distanceNM: Double,
+        speed: Double?,
+        slowing: Bool,
+        descending: Bool,
+        sawCrosswind: Bool,
+        category: AircraftCategory
+    ) -> PatternClassifyResult? {
+        guard Geo.isNearFieldLiberal(distanceNM: distanceNM, altitudeAGLFt: agl) else { return nil }
+        let stretch = liberalCriteriaBoost
+        let downwindStretch = liberalDownwindStretch
+
+        if let anyChosen, isLongFinal(
+            chosen: anyChosen,
+            point: point,
+            heading: heading,
+            agl: agl,
+            speed: speed,
+            category: category,
+            slowing: slowing,
+            stretch: stretch
+        ) {
+            return classifyResult(
+                phase: .final,
+                runway: anyChosen.directionIdent,
+                isApproach: true,
+                liberalBoost: true
+            )
+        }
+        if let anyChosen, isFinal(
+            chosen: anyChosen,
+            point: point,
+            heading: heading,
+            agl: agl,
+            slowing: slowing,
+            descending: descending,
+            speed: speed,
+            category: category,
+            stretch: stretch
+        ) {
+            return classifyResult(phase: .final, runway: anyChosen.directionIdent, liberalBoost: true)
+        }
+        if let patternChosen, isBase(
+            chosen: patternChosen,
+            point: point,
+            heading: heading,
+            agl: agl,
+            slowing: slowing,
+            speed: speed,
+            previousSignedCross: nil,
+            stretch: stretch
+        ) {
+            return classifyResult(phase: .base, runway: patternChosen.directionIdent, liberalBoost: true)
+        }
+        if let crosswind = matchingCrosswind(
+            candidates: crosswindCandidates(
+                patternChosen: patternChosen,
+                anyChosen: anyChosen,
+                activeRunwayDirection: activeRunwayDirection,
+                approaches: approaches
+            ),
+            point: point,
+            heading: heading,
+            agl: agl,
+            distanceNM: distanceNM,
+            stretch: stretch
+        ) {
+            return classifyResult(phase: .crosswind, runway: crosswind.directionIdent, liberalBoost: true)
+        }
+        if sawCrosswind,
+           let patternChosen,
+           isDownwind(
+            chosen: patternChosen,
+            point: point,
+            heading: heading,
+            agl: agl,
+            stretch: downwindStretch
+           ) {
+            return classifyResult(phase: .downwind, runway: patternChosen.directionIdent, liberalBoost: true)
+        }
+        if let activeDW = activeRunwayDownwind(
+            approaches: approaches,
+            activeRunwayDirection: activeRunwayDirection,
+            point: point,
+            heading: heading,
+            agl: agl,
+            distanceNM: distanceNM,
+            stretch: downwindStretch
+        ) {
+            return classifyResult(phase: .downwind, runway: activeDW.directionIdent, liberalBoost: true)
+        }
+        return nil
     }
 
     // MARK: - Runway pick

@@ -21,7 +21,7 @@ actor OpenSkyClient {
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.httpAdditionalHeaders = [
             "Accept": "application/json",
-            "User-Agent": "HowManyLandings/1.0 (aviation traffic monitor)",
+            "User-Agent": AppIdentity.userAgent,
         ]
         return URLSession(configuration: config)
     }

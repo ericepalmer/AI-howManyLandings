@@ -12,13 +12,21 @@ struct PatternTrackerView: View {
     var onShowMETAR: (() -> Void)?
     @Environment(TrackingEngine.self) private var engine
 
-    private var tracked: [LandingDetector.TrackedAircraft] {
+    private var panelAircraft: [LandingDetector.TrackedAircraft] {
+        aircraft.filter { $0.appearsInPatternPanel(airportElevationFt: airport.elevationFt) }
+    }
+
+    private var occupancyCount: Int {
         let now = engine.simulationNow
-        return aircraft.filter { $0.countsTowardPatternOccupancy(at: now) }
+        return panelAircraft.filter { $0.countsTowardPatternOccupancy(at: now) }.count
     }
 
     private var grouped: [(TrackerCategory, [LandingDetector.TrackedAircraft])] {
-        let buckets = Dictionary(grouping: tracked, by: TrackerCategory.category(for:))
+        let now = engine.simulationNow
+        let buckets = Dictionary(
+            grouping: panelAircraft,
+            by: { TrackerCategory.category(for: $0, now: now) }
+        )
         return TrackerCategory.allCases.compactMap { category in
             guard let members = buckets[category], !members.isEmpty else { return nil }
             return (category, category.sorted(members, airport: airport))
@@ -36,7 +44,7 @@ struct PatternTrackerView: View {
                 Text("Within \(Int(Geo.patternRadiusNM)) NM · ≤ \(Int(Geo.patternMaxAGLFt)) ft AGL")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                Text("\(tracked.count) aircraft")
+                Text("\(panelAircraft.count) aircraft · \(occupancyCount) toward landing")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
@@ -49,7 +57,7 @@ struct PatternTrackerView: View {
                 TimelineView(.periodic(from: .now, by: 10)) { _ in
                     LazyVStack(alignment: .leading, spacing: 3) {
                         if grouped.isEmpty {
-                            Text("No pattern traffic yet. Airborne Departure through Final inside 5 NM and at or below 2,000 ft AGL — not Maneuvering, Leaving, or on the ground.")
+                            Text("No pattern traffic yet. Airborne inside 5 NM and at or below 2,000 ft AGL.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .padding(.horizontal, 8)
@@ -61,6 +69,7 @@ struct PatternTrackerView: View {
                                     aircraft: members,
                                     airport: airport,
                                     selectedICAO24: $selectedICAO24,
+                                    hoveredICAO24: engine.hoveredTrackerICAO24,
                                     onDump: onDump,
                                     onPlanePicked: onPlanePicked
                                 )
@@ -112,7 +121,6 @@ private enum TrackerCategory: Int, CaseIterable, Identifiable {
     case downwind
     case upwind
     case maneuvering
-    case leaving
 
     var id: Int { rawValue }
 
@@ -124,30 +132,37 @@ private enum TrackerCategory: Int, CaseIterable, Identifiable {
         case .downwind: return "Downwind"
         case .upwind: return "Upwind"
         case .maneuvering: return "Maneuvering"
-        case .leaving: return "Leaving"
         }
     }
 
     /// Stable stripe so a hidden neighbor does not flip the shade.
     var usesDarkerStripe: Bool { rawValue.isMultiple(of: 2) == false }
 
-    static func category(for aircraft: LandingDetector.TrackedAircraft) -> TrackerCategory {
+    static func category(
+        for aircraft: LandingDetector.TrackedAircraft,
+        now: Date
+    ) -> TrackerCategory {
         if aircraft.isRecentlyLandedForTracker { return .recentlyLanded }
-        switch aircraft.patternPhase {
+        if aircraft.patternStatusUnknown {
+            return .maneuvering
+        }
+        if aircraft.patternLiberalUncertain {
+            return legCategory(for: aircraft.patternPhase)
+        }
+        if !aircraft.countsTowardPatternOccupancy(at: now) {
+            return .maneuvering
+        }
+        return legCategory(for: aircraft.patternPhase)
+    }
+
+    private static func legCategory(for phase: PatternPhase) -> TrackerCategory {
+        switch phase {
         case .final, .flare: return .final
         case .base: return .base
         case .downwind: return .downwind
         case .departure, .upwind, .crosswind: return .upwind
-        case .leaving: return .leaving
-        case .maneuvering, .ground:
-            if isRecentTakeoff(aircraft) { return .upwind }
-            return .maneuvering
+        case .leaving, .maneuvering, .ground: return .maneuvering
         }
-    }
-
-    private static func isRecentTakeoff(_ aircraft: LandingDetector.TrackedAircraft) -> Bool {
-        guard let takeoff = aircraft.lastTakeoffAt else { return false }
-        return aircraft.asOf.timeIntervalSince(takeoff) <= 90
     }
 
     func sorted(
@@ -181,9 +196,18 @@ private enum TrackerCategory: Int, CaseIterable, Identifiable {
             default: phase = 0
             }
             return (phase, aircraft.distanceNM)
-        case .leaving:
-            return (0, -aircraft.distanceNM)
-        case .base, .downwind, .maneuvering:
+        case .maneuvering:
+            if aircraft.patternStatusUnknown {
+                return (0, aircraft.distanceNM)
+            }
+            switch aircraft.patternPhase {
+            case .leaving:
+                return (0, -aircraft.distanceNM)
+            default:
+                let agl = aircraft.snapshot.altitudeAGLFt(airportElevationFt: airport.elevationFt) ?? 9_999
+                return (1, aircraft.distanceNM * 1_000 + agl / 100)
+            }
+        case .base, .downwind:
             let agl = aircraft.snapshot.altitudeAGLFt(airportElevationFt: airport.elevationFt) ?? 9_999
             return (0, aircraft.distanceNM * 1_000 + agl / 100)
         }
@@ -195,6 +219,7 @@ private struct TrackerCategoryCard: View {
     let aircraft: [LandingDetector.TrackedAircraft]
     let airport: Airport
     @Binding var selectedICAO24: String?
+    var hoveredICAO24: String?
     var onDump: ((LandingDetector.TrackedAircraft) -> Void)?
     var onPlanePicked: (() -> Void)?
 
@@ -218,6 +243,7 @@ private struct TrackerCategoryCard: View {
                     airport: airport,
                     color: TrackPalette.swatch(for: ac.id),
                     isSelected: selectedICAO24 == ac.id,
+                    isHovered: hoveredICAO24 == ac.id,
                     now: ac.asOf,
                     onSelect: {
                         onPlanePicked?()
@@ -245,6 +271,7 @@ private struct PatternTrackerCard: View {
     let airport: Airport
     let color: Color
     var isSelected: Bool
+    var isHovered: Bool
     var now: Date
     let onSelect: () -> Void
     let onDump: () -> Void
@@ -282,7 +309,7 @@ private struct PatternTrackerCard: View {
                         } else if let phaseText = chipText {
                             Text(phaseText)
                                 .font(.caption2.weight(.semibold).monospaced())
-                                .foregroundStyle(phaseChipColor)
+                                .foregroundStyle(.white)
                         }
                     }
                     HStack(spacing: 6) {
@@ -319,16 +346,25 @@ private struct PatternTrackerCard: View {
             .padding(.horizontal, 5)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                isSelected ? color.opacity(0.28) : Color.primary.opacity(0.10),
+                isSelected ? color.opacity(0.28)
+                    : isHovered ? color.opacity(0.20)
+                    : Color.primary.opacity(0.10),
                 in: RoundedRectangle(cornerRadius: 6, style: .continuous)
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .strokeBorder(isSelected ? color.opacity(0.8) : Color.clear, lineWidth: 1.5)
+                    .strokeBorder(
+                        isSelected ? color.opacity(0.8)
+                            : isHovered ? color.opacity(0.55)
+                            : Color.clear,
+                        lineWidth: isSelected ? 1.5 : 1
+                    )
             }
         }
         .buttonStyle(.plain)
         .opacity(aircraft.isCoasting ? 0.75 : 1)
+        .animation(.easeInOut(duration: 0.12), value: isHovered)
+        .animation(.easeInOut(duration: 0.12), value: isSelected)
     }
 
     private var lostAgeText: String {
@@ -346,19 +382,6 @@ private struct PatternTrackerCard: View {
 
     private var statusColor: Color {
         aircraft.isCoasting ? .secondary : color
-    }
-
-    private var phaseChipColor: Color {
-        switch aircraft.patternPhase {
-        case .ground:
-            return TrackPalette.ground
-        case .maneuvering, .leaving:
-            return .secondary
-        case .departure, .upwind, .crosswind, .downwind:
-            return .cyan
-        case .base, .final, .flare:
-            return .orange
-        }
     }
 
     static func formatLostAge(from lastSeen: Date, now: Date) -> String {

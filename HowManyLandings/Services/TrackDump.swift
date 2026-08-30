@@ -34,7 +34,7 @@ enum TrackDumpFormatter {
     static func text(for dump: TrackDumpPayload) -> String {
         let sorted = dump.points.sorted { $0.timestamp < $1.timestamp }
         var lines: [String] = []
-        lines.append("# HowManyLandings ADS-B track dump")
+        lines.append("# \(AppIdentity.name) ADS-B track dump")
         lines.append("title: \(dump.title)")
         if !dump.subtitle.isEmpty {
             lines.append("subtitle: \(dump.subtitle)")

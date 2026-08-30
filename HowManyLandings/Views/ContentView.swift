@@ -83,6 +83,9 @@ private struct AirportDetailView: View {
                         engine.selectedTrackerICAO24 = icao
                     }
                 },
+                onHoverAircraft: { icao in
+                    engine.hoveredTrackerICAO24 = icao
+                },
                 externalTrackDump: $trackDump
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -158,6 +161,7 @@ private struct AirportDetailView: View {
         }
         .onChange(of: airport.icao) { _, _ in
             engine.selectedTrackerICAO24 = nil
+            engine.hoveredTrackerICAO24 = nil
         }
         .sheet(item: $trackDump) { dump in
             TrackDumpSheet(dump: dump)

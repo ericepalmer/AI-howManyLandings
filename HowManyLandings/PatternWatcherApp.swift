@@ -2,11 +2,11 @@ import SwiftData
 import SwiftUI
 
 @main
-struct HowManyLandingsApp: App {
+struct PatternWatcherApp: App {
     @State private var engine = TrackingEngine()
 
     init() {
-        print("How Many Landings \(AppBuild.label)")
+        print("\(AppIdentity.name) \(AppBuild.label)")
     }
 
     var body: some Scene {

@@ -31,7 +31,7 @@ def fetch(url: str) -> str:
     cache = Path("/tmp/ourairports") / Path(url).name
     if cache.exists():
         return cache.read_text(encoding="utf-8", errors="replace")
-    req = urllib.request.Request(url, headers={"User-Agent": "HowManyLandings/1.0 (airport catalog)"})
+    req = urllib.request.Request(url, headers={"User-Agent": "PatternWatcher/1.0 (airport catalog)"})
     with urllib.request.urlopen(req, timeout=120) as resp:
         text = resp.read().decode("utf-8", errors="replace")
     cache.parent.mkdir(parents=True, exist_ok=True)

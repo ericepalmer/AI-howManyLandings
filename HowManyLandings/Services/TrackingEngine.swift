@@ -24,6 +24,8 @@ final class TrackingEngine {
     var sessionStartedAt: Date?
     /// Pattern-tracker card selection (Mode-S hex); drives map trail emphasis.
     var selectedTrackerICAO24: String?
+    /// Map hover — highlights matching tracker card without selecting.
+    var hoveredTrackerICAO24: String?
     /// Latest decoded ADS-B poll for the selected airport (before pattern filtering).
     var adsLatestPoll: ADSFeedPoll?
     /// Rolling text log of incoming ADS-B polls.
@@ -242,9 +244,14 @@ final class TrackingEngine {
                 anySuccess = true
                 usedName = fetched.sourceName
                 liveAirportICAOs.insert(airport.icao)
+                let preferredICAO = Set((detectors[airport.icao]?.trackedICAO24s) ?? [])
+                let snapshots = AircraftSnapshotDeduplicator.deduplicated(
+                    fetched.result.snapshots,
+                    preferredICAO24: preferredICAO
+                )
                 if airport.icao == selectedICAO {
                     recordADSFeed(
-                        snapshots: fetched.result.snapshots,
+                        snapshots: snapshots,
                         airport: airport,
                         sourceName: fetched.sourceName,
                         receivedAt: fetched.result.serverTime
@@ -252,7 +259,7 @@ final class TrackingEngine {
                 }
                 var detector = detectors[airport.icao] ?? LandingDetector()
                 let output = detector.ingest(
-                    snapshots: fetched.result.snapshots,
+                    snapshots: snapshots,
                     airport: airport,
                     trackingRadiusNM: AppSettings.trackingRadiusNM,
                     now: fetched.result.serverTime
@@ -447,14 +454,18 @@ final class TrackingEngine {
         for index in 0..<clamped {
             if Task.isCancelled { return }
             let poll = recording.polls[index]
+            let snapshots = AircraftSnapshotDeduplicator.deduplicated(
+                poll.snapshots,
+                preferredICAO24: detector.trackedICAO24s
+            )
             recordADSFeed(
-                snapshots: poll.snapshots,
+                snapshots: snapshots,
                 airport: airport,
                 sourceName: recordedReplayFileName.map { "Recorded · \($0)" } ?? "Recorded ADS-B",
                 receivedAt: poll.time
             )
             let output = detector.ingest(
-                snapshots: poll.snapshots,
+                snapshots: snapshots,
                 airport: airport,
                 trackingRadiusNM: AppSettings.trackingRadiusNM,
                 now: poll.time
@@ -497,6 +508,7 @@ final class TrackingEngine {
             patternOccupancyByAirport[icao] = []
         }
         selectedTrackerICAO24 = nil
+        hoveredTrackerICAO24 = nil
     }
 
     func patternOccupancyHistory(for airportICAO: String) -> [PatternOccupancySample] {

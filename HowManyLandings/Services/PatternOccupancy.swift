@@ -30,15 +30,20 @@ enum PatternOccupancy {
 
     /// Typical remaining time in a piston pattern until landing, by last known leg.
     /// Used when ADS-B drops so lost aircraft still count until the ETA elapses.
-    /// Departure / Crosswind / Maneuvering: no ETA — only count while ADS-B is live.
+    /// Leg coast windows are stretched ~35% for pattern legs.
+    private static let legCoastStretch = 1.35
+
     static func estimatedSecondsToLanding(phase: PatternPhase) -> TimeInterval {
+        let base: TimeInterval
         switch phase {
-        case .flare: return 25
-        case .final: return 70
-        case .base: return 110
-        case .downwind: return 180
-        case .crosswind, .departure, .upwind, .maneuvering, .leaving, .ground: return 0
+        case .flare: base = 25
+        case .final: base = 70
+        case .base: base = 110
+        case .downwind: base = 180
+        case .crosswind: base = 120
+        case .departure, .upwind, .maneuvering, .leaving, .ground: return 0
         }
+        return base * legCoastStretch
     }
 
     static func sample(
@@ -70,6 +75,9 @@ extension LandingDetector.TrackedAircraft {
         if snapshot.onGround { return false }
         if flightState?.isGround == true { return false }
         if patternPhase == .ground || patternPhase == .leaving || patternPhase == .maneuvering {
+            return false
+        }
+        if let agl = track.last?.altitudeAGLFt, agl > Geo.patternHighAGLFt {
             return false
         }
         if lastLandingAt != nil, isCoasting { return false }

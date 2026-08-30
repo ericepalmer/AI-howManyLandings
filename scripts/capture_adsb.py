@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture adsb.lol polls as JSONL for HowManyLandings replay."""
+"""Capture adsb.lol polls as JSONL for Pattern Watcher replay."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ ENDPOINTS = [
 def fetch_poll(lat: float, lon: float, dist_nm: float, timeout: float = 15.0) -> dict:
     headers = {
         "Accept": "application/json",
-        "User-Agent": "HowManyLandings/1.0 (aviation traffic monitor)",
+        "User-Agent": "PatternWatcher/1.0 (aviation traffic monitor)",
     }
     last_error: Exception | None = None
     for template in ENDPOINTS:

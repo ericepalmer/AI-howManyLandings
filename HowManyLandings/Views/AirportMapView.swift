@@ -24,6 +24,7 @@ struct AirportMapView: View {
     var selectedICAO24s: Set<String> = []
     var selectedTrackerICAO24: String? = nil
     var onSelectAircraft: ((String) -> Void)? = nil
+    var onHoverAircraft: ((String?) -> Void)? = nil
     var externalTrackDump: Binding<TrackDumpPayload?>? = nil
 
     @AppStorage(AppSettings.mapStyleKey) private var mapStyleRaw = MapBasemapStyle.satellite.rawValue
@@ -444,8 +445,10 @@ struct AirportMapView: View {
     private func handleHover(_ hovering: Bool, icao: String) {
         if hovering {
             inspectedICAO = icao
+            onHoverAircraft?(icao)
         } else if inspectedICAO == icao {
             inspectedICAO = nil
+            onHoverAircraft?(nil)
         }
     }
 
@@ -597,39 +600,19 @@ private struct AircraftInfoCard: View {
                 }
                 info("Category", snapshot.category.displayName)
                 if snapshot.onGround {
-                    info("Altitude", "Surface")
-                } else {
-                    if let msl = snapshot.altitudeMSLFt {
-                        info("Altitude", "\(format(msl)) ft MSL")
-                    }
-                    if let agl = snapshot.altitudeAGLFt(airportElevationFt: airport.elevationFt) {
-                        info("AGL", "\(format(agl)) ft")
-                    }
+                    info("AGL", "Surface")
+                } else if let agl = snapshot.altitudeAGLFt(airportElevationFt: airport.elevationFt) {
+                    info("AGL", "\(format(agl)) ft")
                 }
                 if let vs = snapshot.verticalRateFPM, !snapshot.onGround {
                     let sign = vs >= 0 ? "+" : ""
                     info("Vertical", "\(sign)\(format(vs)) fpm")
                 }
-                if let gs = snapshot.groundSpeedKt {
-                    info("Groundspeed", "\(format(gs)) kt")
-                }
                 if let track = snapshot.trackDeg {
                     info("Track", "\(Int(track.rounded()))°")
                 }
-                if let maxAGL = aircraft.maxAltitudeAGLFt, maxAGL > 0 {
-                    info("Max AGL", "\(format(maxAGL)) ft")
-                }
-                if let maxGS = aircraft.maxGroundSpeedKt, maxGS > 0 {
-                    info("Max GS", "\(format(maxGS)) kt")
-                }
-                if let duration = aircraft.trackDuration, duration >= 1 {
-                    info("Duration", formatDuration(duration))
-                }
                 if aircraft.isCoasting {
                     info("Last data", aircraft.lastSeen.formatted(.relative(presentation: .named)))
-                }
-                if let squawk = snapshot.squawk {
-                    info("Squawk", squawk)
                 }
                 if !snapshot.originCountry.isEmpty {
                     info("Origin", snapshot.originCountry)
@@ -675,20 +658,6 @@ private struct AircraftInfoCard: View {
 
     private func format(_ value: Double) -> String {
         abs(value) >= 100 ? String(Int(value.rounded())) : String(format: "%.0f", value)
-    }
-
-    private func formatDuration(_ interval: TimeInterval) -> String {
-        let totalSeconds = max(0, Int(interval.rounded()))
-        let hours = totalSeconds / 3600
-        let minutes = (totalSeconds % 3600) / 60
-        let seconds = totalSeconds % 60
-        if hours > 0 {
-            return "\(hours)h \(minutes)m"
-        }
-        if minutes > 0 {
-            return "\(minutes)m \(seconds)s"
-        }
-        return "\(seconds)s"
     }
 }
 

@@ -7,8 +7,13 @@ enum Geo {
     /// Pattern / tracker ring: aircraft inside this radius and at/below pattern AGL.
     static let patternRadiusNM = 5.0
     static let patternMaxAGLFt = 2_000.0
+    /// Liberal pattern-matching and occupancy zone (runway-end distance).
+    static let patternLiberalRadiusNM = 4.0
+    static let patternLiberalMaxAGLFt = 1_200.0
+    /// Above this AGL, treat as outside the pattern (Leaving / Maneuvering).
+    static let patternHighAGLFt = 1_500.0
     /// Tracker card stays this long after ADS-B is lost.
-    static let trackerCoastSeconds: TimeInterval = 5 * 60
+    static let trackerCoastSeconds: TimeInterval = 90
     /// Default map trails (nothing selected) show this much recent history.
     static let recentTrailSeconds: TimeInterval = 5 * 60
     static let metersPerNauticalMile = 1852.0
@@ -27,8 +32,7 @@ enum Geo {
     static let surfaceAGLFt = 50.0
     static let surfaceSpeedKt = 35.0
 
-    /// Inside 5 NM and ≤ 2,000 ft AGL while airborne — likely in the pattern.
-    /// Surface ops stay on the map (status Ground) but off the pattern list until airborne.
+    /// Inside pattern ring using closest runway endpoint / center distance.
     static func isInPattern(
         coordinate: CLLocationCoordinate2D,
         onGround: Bool,
@@ -39,10 +43,32 @@ enum Geo {
         if isSurfaceOps(onGround: onGround, altitudeAGLFt: altitudeAGLFt, groundSpeedKt: groundSpeedKt) {
             return false
         }
-        let distance = distanceNM(coordinate, airport.coordinate)
+        let distance = distanceToAirfieldNM(from: coordinate, airport: airport)
         guard distance <= patternRadiusNM else { return false }
         guard let agl = altitudeAGLFt, agl >= 0 else { return false }
         return agl <= patternMaxAGLFt
+    }
+
+    /// Minimum distance to any runway threshold, midpoint, or departure end.
+    static func distanceToAirfieldNM(from point: CLLocationCoordinate2D, airport: Airport) -> Double {
+        guard !airport.runways.isEmpty else {
+            return distanceNM(point, airport.coordinate)
+        }
+        var best = Double.greatestFiniteMagnitude
+        for runway in airport.runways {
+            best = min(
+                best,
+                distanceNM(point, runway.le),
+                distanceNM(point, runway.he),
+                distanceNM(point, runway.center)
+            )
+        }
+        return best
+    }
+
+    static func isNearFieldLiberal(distanceNM: Double, altitudeAGLFt: Double?) -> Bool {
+        guard let agl = altitudeAGLFt else { return false }
+        return distanceNM <= patternLiberalRadiusNM && agl <= patternLiberalMaxAGLFt
     }
 
     /// True when the target is on the surface (flag, below field, or low-and-slow).

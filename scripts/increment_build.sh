@@ -27,10 +27,10 @@ if [ -f "$PLIST" ]; then
 fi
 
 echo "========================================"
-echo "How Many Landings  BUILD ${NUM}"
+echo "Pattern Watcher  BUILD ${NUM}"
 echo "========================================"
-echo "note: How Many Landings build ${NUM}"
+echo "note: Pattern Watcher build ${NUM}"
 
 if command -v osascript >/dev/null 2>&1; then
-  osascript -e "display notification \"Build ${NUM} is ready\" with title \"How Many Landings\"" >/dev/null 2>&1 || true
+  osascript -e "display notification \"Build ${NUM} is ready\" with title \"Pattern Watcher\"" >/dev/null 2>&1 || true
 fi

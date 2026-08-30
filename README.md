@@ -1,4 +1,4 @@
-# How Many Landings
+# Pattern Watcher
 
 A Mac and iPad app that counts **individual landings** at small airports from live OpenSky Network ADS-B — including each touch-and-go in the pattern, which FlightAware-style “one arrival per flight” feeds usually miss.
 
@@ -23,7 +23,7 @@ Anonymous OpenSky access works, but the daily credit budget is small. For more t
 
 1. Create an account at [opensky-network.org](https://opensky-network.org).
 2. Account → API Client → create a client and copy the ID and secret.
-3. In the app, open **Settings** (key icon, or macOS How Many Landings → Settings) and paste them.
+3. In the app, open **Settings** (key icon, or macOS Pattern Watcher → Settings) and paste them.
 
 Polling a 10 NM box costs **1 credit per airport per request**. The default interval is 10 seconds.
 
