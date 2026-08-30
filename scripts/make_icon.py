@@ -18,7 +18,7 @@ RUNWAY_DARK = (42, 48, 56)
 YELLOW = (255, 214, 90)
 
 ROOT = Path(__file__).resolve().parents[1]
-ICON_PATH = ROOT / "HowManyLandings" / "Assets.xcassets" / "AppIcon.appiconset" / "AppIcon.png"
+ICON_PATH = ROOT / "PatternWatcher" / "Assets.xcassets" / "AppIcon.appiconset" / "AppIcon.png"
 
 
 def lerp(a: int, b: int, t: float) -> int:

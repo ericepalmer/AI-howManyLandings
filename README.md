@@ -14,7 +14,7 @@ The right **Pattern** panel lists every **airborne** aircraft within **5 NM** an
 
 ## Open in Xcode
 
-1. Open `HowManyLandings.xcodeproj` and select the **PatternWatcher** scheme.
+1. Open `PatternWatcher.xcodeproj` and select the **PatternWatcher** scheme.
 2. Choose an **iPad simulator** or **My Mac**.
 3. Select your Development Team in the target’s Signing settings if you are running on a device.
 4. Run.

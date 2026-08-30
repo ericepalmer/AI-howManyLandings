@@ -124,7 +124,7 @@ def is_usable_code(code: str) -> bool:
 
 
 def main() -> None:
-    dest = Path(__file__).resolve().parents[1] / "HowManyLandings" / "Resources" / "Airports.json"
+    dest = Path(__file__).resolve().parents[1] / "PatternWatcher" / "Resources" / "Airports.json"
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     print("Downloading airports.csv …")
