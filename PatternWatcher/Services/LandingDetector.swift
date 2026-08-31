@@ -5,7 +5,7 @@ import Foundation
 ///
 /// - Landing (1): `onGround` false → true while close to the field / runway
 /// - Landing (2): Final/Flare, AGL < 0, GS < 1.3×Vso
-/// - Landing (3): Final/Flare, AGL < 100 ft, GS < 1.2×Vso
+/// - Landing (3): Final, Flare, or Approach, AGL < 100 ft, GS < 1.2×Vso
 /// - Takeoff: `onGround` true → false while close to the field / runway
 ///
 /// First sighting establishes baseline only (no event).
@@ -569,7 +569,7 @@ struct LandingDetector: Sendable {
         return true
     }
 
-    /// Criterion 3: Final/Flare, AGL < 100 ft, GS below 1.2×Vso.
+    /// Criterion 3: Final, Flare, or Approach; AGL < 100 ft; GS below 1.2×Vso.
     @discardableResult
     private mutating func applyNearGroundSlowLanding(
         snapshot: AircraftSnapshot,
@@ -577,7 +577,7 @@ struct LandingDetector: Sendable {
         airport: Airport,
         memory: inout AircraftMemory
     ) -> Bool {
-        guard memory.pattern.phase == .final || memory.pattern.phase == .flare else { return false }
+        guard isCriterion3Phase(memory: memory) else { return false }
         guard !kinematicLandingBlocked(memory: memory) else { return false }
         guard let agl, agl < Self.nearGroundAGLFt else { return false }
 
@@ -595,6 +595,13 @@ struct LandingDetector: Sendable {
             inferredGround: true
         )
         return true
+    }
+
+    /// Final, flare, or long-final Approach (`isApproach` on `.final`).
+    private func isCriterion3Phase(memory: AircraftMemory) -> Bool {
+        memory.pattern.phase == .flare
+            || memory.pattern.phase == .final
+            || memory.pattern.isApproach
     }
 
     private func kinematicLandingBlocked(memory: AircraftMemory) -> Bool {
