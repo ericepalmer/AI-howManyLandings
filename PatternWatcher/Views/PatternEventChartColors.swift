@@ -6,6 +6,11 @@ enum PatternEventChartColors {
     static let landingInferred = landingConfirmed.opacity(0.5)
     static let takeoffConfirmed = Color(red: 0.1, green: 0.55, blue: 0.22)
     static let takeoffInferred = takeoffConfirmed.opacity(0.5)
+    /// Rounded ends on landing/takeoff event bars in Swift Charts.
+    static let eventBarCornerRadius: CGFloat = 4
+    static let eventLabelFontSize: CGFloat = 9
+    /// Nudge vertical callsign labels up/right (~1.25 monospace character widths).
+    static var eventLabelNudgePt: CGFloat { eventLabelFontSize * 0.625 * 1.25 }
 
     static func landing(confirmed: Bool) -> Color {
         confirmed ? landingConfirmed : landingInferred

@@ -3,8 +3,9 @@ import Foundation
 
 /// Pattern tracking and aircraft state near this airport.
 ///
-/// - Landing: `onGround` false → true while close to the field / runway
-/// - Landing (final/flare): AGL < 0, or AGL < 100 ft and GS < 50 kt
+/// - Landing (1): `onGround` false → true while close to the field / runway
+/// - Landing (2): Final/Flare, AGL < 0, GS < 1.3×Vso
+/// - Landing (3): Final/Flare, AGL < 100 ft, GS < 1.2×Vso
 /// - Takeoff: `onGround` true → false while close to the field / runway
 ///
 /// First sighting establishes baseline only (no event).
@@ -280,14 +281,19 @@ struct LandingDetector: Sendable {
             )
             appendEngagementPoint(point, to: &memory, now: now)
 
-            // Kinematic landing uses the prior Final/Flare chip — must run before
-            // PatternClassifier, which would otherwise fold AGL < 0 into Ground.
-            if !applyKinematicLanding(
+            // Kinematic landing runs before PatternClassifier (AGL < 0 → Ground there).
+            let kinematicLanding = applyLowAndSlowLanding(
                 snapshot: snapshot,
                 agl: agl,
                 airport: airport,
                 memory: &memory
-            ) {
+            ) || applyNearGroundSlowLanding(
+                snapshot: snapshot,
+                agl: agl,
+                airport: airport,
+                memory: &memory
+            )
+            if !kinematicLanding {
                 applyOnGroundEdge(
                     snapshot: snapshot,
                     agl: agl,
@@ -533,23 +539,23 @@ struct LandingDetector: Sendable {
 
     // MARK: - Surface state (no event log)
 
-    /// Final / flare only: AGL < 0, or AGL < 100 ft with GS < 50 kt.
+    private static let nearGroundAGLFt = 100.0
+
+    /// Criterion 2: Final/Flare, below field (AGL < 0), GS below 1.3×Vso.
     @discardableResult
-    private mutating func applyKinematicLanding(
+    private mutating func applyLowAndSlowLanding(
         snapshot: AircraftSnapshot,
         agl: Double?,
         airport: Airport,
         memory: inout AircraftMemory
     ) -> Bool {
         guard memory.pattern.phase == .final || memory.pattern.phase == .flare else { return false }
-        if memory.flightState?.isGround == true { return false }
-        if memory.lastOnGround == true { return false }
+        guard !kinematicLandingBlocked(memory: memory) else { return false }
+        guard let agl, agl < 0 else { return false }
 
-        guard let agl else { return false }
         let speed = snapshot.groundSpeedKt ?? .greatestFiniteMagnitude
-        let belowField = agl < 0
-        let lowAndSlow = agl < 100 && speed < 50
-        guard belowField || lowAndSlow else { return false }
+        let threshold = AircraftStallSpeed.patternApproachSpeedKnots(for: snapshot)
+        guard speed < threshold else { return false }
         guard isCloseEnoughForSurfaceOps(coordinate: snapshot.coordinate, airport: airport) else {
             return false
         }
@@ -561,6 +567,40 @@ struct LandingDetector: Sendable {
             inferredGround: true
         )
         return true
+    }
+
+    /// Criterion 3: Final/Flare, AGL < 100 ft, GS below 1.2×Vso.
+    @discardableResult
+    private mutating func applyNearGroundSlowLanding(
+        snapshot: AircraftSnapshot,
+        agl: Double?,
+        airport: Airport,
+        memory: inout AircraftMemory
+    ) -> Bool {
+        guard memory.pattern.phase == .final || memory.pattern.phase == .flare else { return false }
+        guard !kinematicLandingBlocked(memory: memory) else { return false }
+        guard let agl, agl < Self.nearGroundAGLFt else { return false }
+
+        let speed = snapshot.groundSpeedKt ?? .greatestFiniteMagnitude
+        let threshold = AircraftStallSpeed.nearGroundApproachSpeedKnots(for: snapshot)
+        guard speed < threshold else { return false }
+        guard isCloseEnoughForSurfaceOps(coordinate: snapshot.coordinate, airport: airport) else {
+            return false
+        }
+
+        applyLandingState(
+            snapshot: snapshot,
+            airport: airport,
+            memory: &memory,
+            inferredGround: true
+        )
+        return true
+    }
+
+    private func kinematicLandingBlocked(memory: AircraftMemory) -> Bool {
+        if memory.flightState?.isGround == true { return true }
+        if memory.lastOnGround == true { return true }
+        return false
     }
 
     /// Landing = false→true, takeoff = true→false. First sample sets baseline only.
@@ -583,7 +623,8 @@ struct LandingDetector: Sendable {
         if memory.groundInferred, previous, !onGround {
             let aglFt = agl ?? 0
             let speed = snapshot.groundSpeedKt ?? 0
-            if aglFt < 100 || speed < 50 {
+            let approachKt = AircraftStallSpeed.patternApproachSpeedKnots(for: snapshot)
+            if aglFt < Self.nearGroundAGLFt || speed < approachKt {
                 memory.lastOnGround = true
                 memory.flightState = .landed
                 return
@@ -592,9 +633,17 @@ struct LandingDetector: Sendable {
         }
 
         memory.lastOnGround = onGround
+
+        guard previous != onGround else {
+            // Still on ground or still airborne — do not promote initialGround → landed.
+            if !onGround {
+                memory.flightState = .tookOff
+            }
+            return
+        }
+
         memory.flightState = onGround ? .landed : .tookOff
 
-        guard previous != onGround else { return }
         guard isCloseEnoughForSurfaceOps(coordinate: snapshot.coordinate, airport: airport) else {
             return
         }

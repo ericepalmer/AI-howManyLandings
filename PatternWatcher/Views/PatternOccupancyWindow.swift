@@ -162,6 +162,7 @@ struct PatternOccupancyWindow: View {
                     yEnd: .value("Landings", 1)
                 )
                 .foregroundStyle(PatternEventChartColors.landing(confirmed: marker.confirmed))
+                .cornerRadius(PatternEventChartColors.eventBarCornerRadius)
 
                 PointMark(
                     x: .value("Time", marker.time.addingTimeInterval(eventBarDuration * 0.5)),
@@ -181,6 +182,7 @@ struct PatternOccupancyWindow: View {
                     yEnd: .value("Takeoffs", 2)
                 )
                 .foregroundStyle(PatternEventChartColors.takeoff(confirmed: marker.confirmed))
+                .cornerRadius(PatternEventChartColors.eventBarCornerRadius)
 
                 PointMark(
                     x: .value("Time", marker.time.addingTimeInterval(eventBarDuration * 0.5)),
@@ -257,12 +259,15 @@ struct PatternOccupancyWindow: View {
 private struct PatternEventAxisLabel: View {
     let text: String
 
+    private var nudge: CGFloat { PatternEventChartColors.eventLabelNudgePt }
+
     var body: some View {
         Text(text)
-            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+            .font(.system(size: PatternEventChartColors.eventLabelFontSize, weight: .semibold, design: .monospaced))
             .foregroundStyle(.white)
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
             .rotationEffect(.degrees(-90), anchor: .bottom)
+            .offset(x: nudge, y: -nudge)
     }
 }

@@ -104,6 +104,7 @@ struct PatternOccupancyMiniChart: View {
                             yEnd: .value("Landings", 1)
                         )
                         .foregroundStyle(PatternEventChartColors.landing(confirmed: marker.confirmed))
+                        .cornerRadius(PatternEventChartColors.eventBarCornerRadius)
                     }
 
                     ForEach(takeoffMarkers) { marker in
@@ -114,6 +115,7 @@ struct PatternOccupancyMiniChart: View {
                             yEnd: .value("Takeoffs", 2)
                         )
                         .foregroundStyle(PatternEventChartColors.takeoff(confirmed: marker.confirmed))
+                        .cornerRadius(PatternEventChartColors.eventBarCornerRadius)
                     }
                 }
                 .chartYScale(domain: 0...yMax)
