@@ -2,6 +2,7 @@ import Foundation
 
 /// Published Vso (stall in landing configuration, max gross) in knots.
 /// Used for kinematic landing: GS below 1.3×Vso (criterion 2, Final/Flare, AGL < 0).
+/// Criterion 1b logs on surface contact in the pending runway corridor (ADS-B margin).
 ///
 /// Sources: FAA TCDS / POH airspeed limitations (flaps full, power off). ADS-B ground
 /// speed is compared directly — close enough at pattern speeds.

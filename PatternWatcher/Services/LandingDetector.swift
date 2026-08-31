@@ -4,6 +4,9 @@ import Foundation
 /// Pattern tracking and aircraft state near this airport.
 ///
 /// - Landing (1, confirmed): `onGround` false → true while close to the field / runway
+/// - Landing (1b, confirmed): Final/Flare approach (pending) ends on the surface near the
+///   pending runway (along/cross-track corridor, ADS-B position-error margin) — log at that
+///   time even when ADS-B never flips `onGround` or AGL stays above the field
 /// - Landing (2, confirmed): Final/Flare, AGL < 0, GS < 1.3×Vso
 /// - Landing (deferred): reaching Final or Flare starts a pending approach; the landing
 ///   is logged when (1) or (2) fires, or when the aircraft reappears on Departure / Upwind
@@ -340,6 +343,14 @@ struct LandingDetector: Sendable {
                 )
             }
             if !memory.landingMarkerRecorded {
+                applyApproachToGroundLanding(
+                    snapshot: snapshot,
+                    agl: agl,
+                    airport: airport,
+                    memory: &memory
+                )
+            }
+            if !memory.landingMarkerRecorded {
                 applyLowAndSlowLanding(
                     snapshot: snapshot,
                     agl: agl,
@@ -564,6 +575,13 @@ struct LandingDetector: Sendable {
     // MARK: - Surface state (no event log)
 
     private static let nearGroundAGLFt = 100.0
+    /// ~300 ft horizontal ADS-B uncertainty on/near the surface, plus a little slack.
+    private static let adsbPositionErrorMarginNM = 0.05
+    /// Half-width when strip width is not in the dataset (~75 ft each side).
+    private static let runwayHalfWidthNM = 0.02
+    /// Along-runway slack before the threshold (approach path) and through rollout.
+    private static let runwayApproachAlongMarginNM = 0.10
+    private static let runwayRolloutAlongMarginNM = 0.08
 
     /// Criterion 2: below field (AGL < 0) on approach, GS below 1.3×Vso.
     /// Fires on Final/Flare, pending approach, or negative AGL near the runway (rollout join).
@@ -591,8 +609,8 @@ struct LandingDetector: Sendable {
         guard let agl, agl < 0 else { return false }
 
         let speed = snapshot.groundSpeedKt ?? .greatestFiniteMagnitude
-        let threshold = AircraftStallSpeed.patternApproachSpeedKnots(for: snapshot)
-        guard speed < threshold else { return false }
+        let limit = kinematicLandingSpeedLimitKnots(agl: agl, snapshot: snapshot)
+        guard speed < limit else { return false }
         guard isCloseEnoughForSurfaceOps(coordinate: snapshot.coordinate, airport: airport) else {
             return false
         }
@@ -608,6 +626,89 @@ struct LandingDetector: Sendable {
         return true
     }
 
+    /// Criterion 1b: pending Final/Flare approach reaches the surface — log at touchdown time.
+    @discardableResult
+    private mutating func applyApproachToGroundLanding(
+        snapshot: AircraftSnapshot,
+        agl: Double?,
+        airport: Airport,
+        memory: inout AircraftMemory
+    ) -> Bool {
+        guard memory.pendingLandingSince != nil else { return false }
+        guard isOnSurfaceAfterApproach(snapshot: snapshot, agl: agl, memory: memory) else {
+            return false
+        }
+        if isColdStartClimbOut(memory: memory) { return false }
+        guard isNearRunwayForApproachLanding(
+            coordinate: snapshot.coordinate,
+            airport: airport,
+            memory: memory
+        ) else {
+            return false
+        }
+
+        applyLandingState(
+            snapshot: snapshot,
+            airport: airport,
+            memory: &memory,
+            landingTime: snapshot.timestamp,
+            confirmed: true,
+            inferGroundState: !snapshot.onGround,
+            setGroundPhase: true
+        )
+        return true
+    }
+
+    private func isOnSurfaceAfterApproach(
+        snapshot: AircraftSnapshot,
+        agl: Double?,
+        memory: AircraftMemory
+    ) -> Bool {
+        if memory.pattern.phase == .ground { return true }
+        if snapshot.onGround { return true }
+        if memory.flightState?.isGround == true { return true }
+        return Geo.isSurfaceOps(
+            onGround: snapshot.onGround,
+            altitudeAGLFt: agl,
+            groundSpeedKt: snapshot.groundSpeedKt
+        )
+    }
+
+    /// Runway corridor for criterion 1b: on the pending approach strip, within ADS-B error.
+    private func isNearRunwayForApproachLanding(
+        coordinate: CLLocationCoordinate2D,
+        airport: Airport,
+        memory: AircraftMemory
+    ) -> Bool {
+        if airport.runways.isEmpty {
+            return Geo.distanceNM(coordinate, airport.coordinate) <= config.airportFallbackNM
+        }
+
+        let approaches = airport.runways.flatMap(\.approaches)
+        let crossLimit = Self.runwayHalfWidthNM + Self.adsbPositionErrorMarginNM
+        let preferred = memory.pendingLandingRunwayIdent.map(RunwayApproach.displayIdent)
+
+        let candidates: [RunwayApproach]
+        if let preferred,
+           let match = approaches.first(where: { approachMatchesPreferred($0, preferred: preferred) }) {
+            candidates = [match]
+        } else {
+            candidates = approaches
+        }
+
+        for approach in candidates {
+            let frame = approach.frame(at: coordinate)
+            guard abs(frame.crossRight) <= crossLimit else { continue }
+
+            let alongMin = -(Self.runwayApproachAlongMarginNM + Self.adsbPositionErrorMarginNM)
+            let alongMax = approach.lengthNM + Self.runwayRolloutAlongMarginNM + Self.adsbPositionErrorMarginNM
+            guard frame.along >= alongMin, frame.along <= alongMax else { continue }
+
+            return true
+        }
+        return false
+    }
+
     private func isInKinematicLandingContext(
         memory: AircraftMemory,
         agl: Double?,
@@ -621,6 +722,14 @@ struct LandingDetector: Sendable {
             return true
         }
         return false
+    }
+
+    /// Below-field rollout can exceed 1.3×Vso briefly; deep negative AGL is definitive.
+    private func kinematicLandingSpeedLimitKnots(agl: Double, snapshot: AircraftSnapshot) -> Double {
+        let threshold = AircraftStallSpeed.patternApproachSpeedKnots(for: snapshot)
+        guard agl < 0 else { return threshold }
+        if agl < -30 { return .greatestFiniteMagnitude }
+        return max(threshold, 85)
     }
 
     private mutating func updatePendingLandingBestAGL(
@@ -656,7 +765,7 @@ struct LandingDetector: Sendable {
         return (agls.max() ?? 0) - (agls.min() ?? 0) < 100
     }
 
-    /// Final/Flare starts a pending landing; resolve on criteria 1/2 or Departure/Upwind climb-out.
+    /// Final/Flare starts a pending landing; resolve on criteria 1/1b/2 or Departure/Upwind climb-out.
     private mutating func processPendingLanding(
         snapshot: AircraftSnapshot,
         agl: Double?,
@@ -671,9 +780,13 @@ struct LandingDetector: Sendable {
                 guard hasTrackedApproachDescent(memory: memory) else { return }
                 memory.pendingLandingSince = snapshot.timestamp
                 memory.pendingLandingPhase = memory.pattern.phase
+                memory.pendingLandingRunwayIdent = memory.pattern.runwayIdent
                 memory.pendingLandingBestTime = snapshot.timestamp
                 memory.pendingLandingBestAGL = agl
             } else {
+                if let ident = memory.pattern.runwayIdent {
+                    memory.pendingLandingRunwayIdent = ident
+                }
                 updatePendingLandingBestAGL(
                     agl: agl,
                     timestamp: snapshot.timestamp,
@@ -688,6 +801,12 @@ struct LandingDetector: Sendable {
                !isColdStartClimbOut(memory: memory) {
                 memory.pendingLandingSince = snapshot.timestamp
                 memory.pendingLandingPhase = .flare
+                memory.pendingLandingRunwayIdent = memory.pattern.runwayIdent
+                    ?? bestRunwayApproach(
+                        coordinate: snapshot.coordinate,
+                        heading: snapshot.trackDeg,
+                        airport: airport
+                    )?.ident
                 memory.pendingLandingBestTime = snapshot.timestamp
                 memory.pendingLandingBestAGL = agl
             } else if memory.pendingLandingSince != nil {
@@ -697,18 +816,53 @@ struct LandingDetector: Sendable {
                     memory: &memory
                 )
             }
-        case .departure, .upwind:
+        case .departure, .upwind, .crosswind:
             resolvePendingLanding(
                 snapshot: snapshot,
                 airport: airport,
                 memory: &memory,
                 recordTakeoff: true
             )
-        case .base, .downwind, .maneuvering:
+        case .base, .downwind:
             clearPendingLanding(&memory)
         default:
             break
         }
+
+        tryResolvePendingAfterRollout(
+            snapshot: snapshot,
+            agl: agl,
+            airport: airport,
+            memory: &memory
+        )
+    }
+
+    /// Touch-and-go climb after sub-field rollout before Departure geometry matches.
+    private mutating func tryResolvePendingAfterRollout(
+        snapshot: AircraftSnapshot,
+        agl: Double?,
+        airport: Airport,
+        memory: inout AircraftMemory
+    ) {
+        guard memory.pendingLandingSince != nil else { return }
+        guard !memory.landingMarkerRecorded else { return }
+        guard let bestAGL = memory.pendingLandingBestAGL, bestAGL < 30 else { return }
+        guard let agl, agl > bestAGL + 20 else { return }
+        guard !snapshot.onGround else { return }
+
+        let phase = memory.pattern.phase
+        let climbingOut = phase == .departure
+            || phase == .upwind
+            || phase == .crosswind
+            || (agl >= 40 && (snapshot.groundSpeedKt ?? 0) >= 35)
+        guard climbingOut else { return }
+
+        resolvePendingLanding(
+            snapshot: snapshot,
+            airport: airport,
+            memory: &memory,
+            recordTakeoff: true
+        )
     }
 
     private mutating func resolvePendingLanding(
@@ -746,6 +900,7 @@ struct LandingDetector: Sendable {
     private func clearPendingLanding(_ memory: inout AircraftMemory) {
         memory.pendingLandingSince = nil
         memory.pendingLandingPhase = nil
+        memory.pendingLandingRunwayIdent = nil
         memory.pendingLandingBestTime = nil
         memory.pendingLandingBestAGL = nil
     }
@@ -940,6 +1095,20 @@ struct LandingDetector: Sendable {
         heading: Double?,
         airport: Airport
     ) -> String? {
+        bestRunwayApproach(coordinate: coordinate, heading: heading, airport: airport)?.directionIdent
+    }
+
+    private func approachMatchesPreferred(_ approach: RunwayApproach, preferred: String) -> Bool {
+        let normalized = RunwayApproach.displayIdent(preferred)
+        if RunwayApproach.displayIdent(approach.ident) == normalized { return true }
+        return approach.directionIdent == RunwayApproach.directionIdent(normalized)
+    }
+
+    private func bestRunwayApproach(
+        coordinate: CLLocationCoordinate2D,
+        heading: Double?,
+        airport: Airport
+    ) -> RunwayApproach? {
         let approaches = airport.runways.flatMap(\.approaches)
         guard !approaches.isEmpty else { return nil }
         var best: RunwayApproach?
@@ -956,7 +1125,7 @@ struct LandingDetector: Sendable {
                 best = approach
             }
         }
-        return best?.directionIdent
+        return best
     }
 
     /// Climb-out after a recent touchdown when ADS-B never reports a clean ground→airborne edge (touch-and-go).
@@ -1127,9 +1296,10 @@ private struct AircraftMemory: Sendable {
     var flightState: LandingDetector.FlightState?
     /// Landing was inferred from AGL/speed (criterion 2) while ADS-B still shows airborne.
     var groundInferred: Bool = false
-    /// Final/Flare seen; landing deferred until criteria 1/2, Departure/Upwind, or 60s lost.
+    /// Final/Flare seen; landing deferred until criteria 1/1b/2, Departure/Upwind, or 60s lost.
     var pendingLandingSince: Date?
     var pendingLandingPhase: PatternPhase?
+    var pendingLandingRunwayIdent: String?
     var pendingLandingBestTime: Date?
     var pendingLandingBestAGL: Double?
     /// One graph marker per landing episode until the next takeoff.

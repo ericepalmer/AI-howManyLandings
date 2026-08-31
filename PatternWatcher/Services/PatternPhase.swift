@@ -260,7 +260,8 @@ enum PatternClassifier {
             chosenActive: chosenActive,
             activeRunwayDirection: activeRunwayDirection,
             approaches: approaches,
-            category: snapshot.category
+            category: snapshot.category,
+            stickyRunwayIdent: state.runwayIdent
         )
 
         state.phase = next.phase
@@ -373,49 +374,74 @@ enum PatternClassifier {
         chosenActive: RunwayApproach?,
         activeRunwayDirection: String?,
         approaches: [RunwayApproach],
-        category: AircraftCategory
+        category: AircraftCategory,
+        stickyRunwayIdent: String? = nil
     ) -> PatternClassifyResult {
         let patternChosen = chosenActive
         let anyChosen = chosenAny
         let liberal = Geo.isNearFieldLiberal(distanceNM: distanceNM, altitudeAGLFt: agl)
 
-        if let anyChosen, isFlare(chosen: anyChosen, point: point, heading: heading, agl: agl, speed: speed) {
-            return classifyResult(phase: .flare, runway: anyChosen.ident)
+        if let flareApproach = bestProfileApproach(
+            approaches: approaches,
+            point: point,
+            matching: {
+                isFlare(
+                    chosen: $0,
+                    point: point,
+                    heading: heading,
+                    agl: agl,
+                    speed: speed
+                )
+            }
+        ) {
+            return classifyResult(phase: .flare, runway: flareApproach.ident)
         }
 
         let finalMods = legStretchModifiers(previous: previous, leg: .final, liberal: liberal)
-        if let anyChosen, isLongFinal(
-            chosen: anyChosen,
+        if let finalApproach = bestProfileApproach(
+            approaches: approaches,
             point: point,
-            heading: heading,
-            agl: agl,
-            speed: speed,
-            category: category,
-            slowing: slowing,
-            stretch: finalMods.stretch
+            matching: {
+                isLongFinal(
+                    chosen: $0,
+                    point: point,
+                    heading: heading,
+                    agl: agl,
+                    speed: speed,
+                    category: category,
+                    slowing: slowing,
+                    stretch: finalMods.stretch
+                )
+            }
         ) {
             return classifyResult(
                 phase: .final,
-                runway: anyChosen.ident,
+                runway: finalApproach.ident,
                 isApproach: true,
                 legHold: finalMods.legHold,
                 liberalBoost: finalMods.liberalBoost
             )
         }
-        if let anyChosen, isFinal(
-            chosen: anyChosen,
+        if let finalApproach = bestProfileApproach(
+            approaches: approaches,
             point: point,
-            heading: heading,
-            agl: agl,
-            slowing: slowing,
-            descending: descending,
-            speed: speed,
-            category: category,
-            stretch: finalMods.stretch
+            matching: {
+                isFinal(
+                    chosen: $0,
+                    point: point,
+                    heading: heading,
+                    agl: agl,
+                    slowing: slowing,
+                    descending: descending,
+                    speed: speed,
+                    category: category,
+                    stretch: finalMods.stretch
+                )
+            }
         ) {
             return classifyResult(
                 phase: .final,
-                runway: anyChosen.ident,
+                runway: finalApproach.ident,
                 legHold: finalMods.legHold,
                 liberalBoost: finalMods.liberalBoost
             )
@@ -609,6 +635,8 @@ enum PatternClassifier {
         if holds(
             previous,
             chosen: holdChosen,
+            approaches: approaches,
+            stickyRunwayIdent: stickyRunwayIdent,
             point: point,
             heading: heading,
             agl: agl,
@@ -873,18 +901,23 @@ enum PatternClassifier {
                 candidates.append(approach)
             }
         }
+        var best: (PatternPhase, String?)?
+        var bestCross = Double.greatestFiniteMagnitude
         for approach in candidates {
-            if let match = departureOrUpwind(
+            guard let match = departureOrUpwind(
                 chosen: approach,
                 point: point,
                 heading: heading,
                 agl: agl,
                 stretch: stretch
-            ) {
-                return match
+            ) else { continue }
+            let cross = abs(approach.frame(at: point).crossRight)
+            if cross < bestCross {
+                bestCross = cross
+                best = match
             }
         }
-        return nil
+        return best
     }
 
     private static func isRecentTakeoff(lastTakeoffAt: Date?, now: Date) -> Bool {
@@ -1171,6 +1204,8 @@ enum PatternClassifier {
     private static func holds(
         _ phase: PatternPhase,
         chosen: RunwayApproach?,
+        approaches: [RunwayApproach],
+        stickyRunwayIdent: String?,
         point: CLLocationCoordinate2D,
         heading: Double?,
         agl: Double?,
@@ -1185,6 +1220,7 @@ enum PatternClassifier {
         descending: Bool
     ) -> Bool {
         if requiresActive, !hasActive { return false }
+        let geometryApproach = approachForSticky(stickyRunwayIdent, among: approaches) ?? chosen
         switch phase {
         case .ground, .maneuvering:
             return false
@@ -1192,7 +1228,7 @@ enum PatternClassifier {
             // Hold only while still in the same altitude band of the departure corridor.
             // Outside ½ NM (and not Crosswind — checked earlier) falls through to Maneuvering.
             guard let match = departureOrUpwind(
-                chosen: chosen,
+                chosen: geometryApproach,
                 point: point,
                 heading: heading,
                 agl: agl,
@@ -1200,9 +1236,9 @@ enum PatternClassifier {
             ) else { return false }
             return match.0 == phase
         case .crosswind:
-            guard let chosen, let heading else { return false }
-            let along = chosen.frame(at: point).along
-            return Geo.isPerpendicular(heading, to: chosen.headingDeg, tolerance: perpTol * legHoldStretch)
+            guard let geometryApproach, let heading else { return false }
+            let along = geometryApproach.frame(at: point).along
+            return Geo.isPerpendicular(heading, to: geometryApproach.headingDeg, tolerance: perpTol * legHoldStretch)
                 && along > 0.15 / legHoldStretch
                 && distanceNM < 2.6 * legHoldStretch
                 && (agl ?? 0) < 1_900 + (legHoldStretch > 1 ? 200 : 0)
@@ -1253,9 +1289,9 @@ enum PatternClassifier {
                 && frame.along < 0.4 * legHoldStretch
                 && abs(frame.crossRight) > 0.15 / legHoldStretch)
         case .final:
-            guard let chosen else { return false }
+            guard let geometryApproach else { return false }
             return isFinal(
-                chosen: chosen,
+                chosen: geometryApproach,
                 point: point,
                 heading: heading,
                 agl: agl,
@@ -1266,7 +1302,7 @@ enum PatternClassifier {
                 stretch: legHoldStretch
             )
                 || isLongFinal(
-                    chosen: chosen,
+                    chosen: geometryApproach,
                     point: point,
                     heading: heading,
                     agl: agl,
@@ -1276,11 +1312,11 @@ enum PatternClassifier {
                     stretch: legHoldStretch
                 )
         case .flare:
-            guard let chosen else { return false }
-            let frame = chosen.frame(at: point)
-            return isFlare(chosen: chosen, point: point, heading: heading, agl: agl, speed: speed)
+            guard let geometryApproach else { return false }
+            let frame = geometryApproach.frame(at: point)
+            return isFlare(chosen: geometryApproach, point: point, heading: heading, agl: agl, speed: speed)
                 || ((agl ?? 0) < 160
-                    && chosen.distanceToThresholdNM(from: point) < 0.55
+                    && geometryApproach.distanceToThresholdNM(from: point) < 0.55
                     && isOnShortFinalApproachSide(along: frame.along, agl: agl))
         case .leaving:
             if isApproachingField(distanceNM: distanceNM, previousDistanceNM: previousDistanceNM) {
@@ -1313,35 +1349,47 @@ enum PatternClassifier {
         let stretch = liberalCriteriaBoost
         let downwindStretch = liberalDownwindStretch
 
-        if let anyChosen, isLongFinal(
-            chosen: anyChosen,
+        if let finalApproach = bestProfileApproach(
+            approaches: approaches,
             point: point,
-            heading: heading,
-            agl: agl,
-            speed: speed,
-            category: category,
-            slowing: slowing,
-            stretch: stretch
+            matching: {
+                isLongFinal(
+                    chosen: $0,
+                    point: point,
+                    heading: heading,
+                    agl: agl,
+                    speed: speed,
+                    category: category,
+                    slowing: slowing,
+                    stretch: stretch
+                )
+            }
         ) {
             return classifyResult(
                 phase: .final,
-                runway: anyChosen.ident,
+                runway: finalApproach.ident,
                 isApproach: true,
                 liberalBoost: true
             )
         }
-        if let anyChosen, isFinal(
-            chosen: anyChosen,
+        if let finalApproach = bestProfileApproach(
+            approaches: approaches,
             point: point,
-            heading: heading,
-            agl: agl,
-            slowing: slowing,
-            descending: descending,
-            speed: speed,
-            category: category,
-            stretch: stretch
+            matching: {
+                isFinal(
+                    chosen: $0,
+                    point: point,
+                    heading: heading,
+                    agl: agl,
+                    slowing: slowing,
+                    descending: descending,
+                    speed: speed,
+                    category: category,
+                    stretch: stretch
+                )
+            }
         ) {
-            return classifyResult(phase: .final, runway: anyChosen.ident, liberalBoost: true)
+            return classifyResult(phase: .final, runway: finalApproach.ident, liberalBoost: true)
         }
         if let patternChosen, isBase(
             chosen: patternChosen,
@@ -1397,6 +1445,37 @@ enum PatternClassifier {
 
     // MARK: - Runway pick
 
+    /// Parallel strips: pick the runway whose centerline best matches the track.
+    private static func bestProfileApproach(
+        approaches: [RunwayApproach],
+        point: CLLocationCoordinate2D,
+        matching: (RunwayApproach) -> Bool
+    ) -> RunwayApproach? {
+        var best: RunwayApproach?
+        var bestCross = Double.greatestFiniteMagnitude
+        for approach in approaches where matching(approach) {
+            let cross = abs(approach.frame(at: point).crossRight)
+            if cross < bestCross {
+                bestCross = cross
+                best = approach
+            }
+        }
+        return best
+    }
+
+    private static func approachForSticky(
+        _ sticky: String?,
+        among approaches: [RunwayApproach]
+    ) -> RunwayApproach? {
+        guard let sticky else { return nil }
+        let normalized = RunwayApproach.displayIdent(sticky)
+        return approaches.first {
+            $0.ident == sticky
+                || $0.ident == normalized
+                || RunwayApproach.displayIdent($0.ident) == normalized
+        }
+    }
+
     private static func pickApproach(
         approaches: [RunwayApproach],
         point: CLLocationCoordinate2D,
@@ -1434,9 +1513,9 @@ enum PatternClassifier {
         let cross = abs(frame.crossRight)
         if let track {
             if Geo.isAbout(track, approach.headingDeg, tolerance: 24) {
-                value += 50 / (1 + cross * 10)
+                value += 70 / (1 + cross * 18)
                 if frame.along < 0.25, frame.along > -3 { value += 22 }
-                if frame.along > -0.1 { value += 12 / (1 + cross * 4) }
+                if frame.along > -0.1 { value += 16 / (1 + cross * 6) }
             }
             if Geo.isPerpendicular(track, to: approach.headingDeg, tolerance: 30) {
                 value += 18

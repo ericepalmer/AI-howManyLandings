@@ -23,6 +23,8 @@ struct PatternStatsWindow: View {
     /// ~18 hours visible in the chart viewport (hourly ticks, zoomed in).
     private let visibleWindow: TimeInterval = 18 * PatternHourlyStats.hourInterval
     private let hourWidth: CGFloat = 44
+    /// Hour slot used for bar width; 10% total gap between adjacent bars.
+    private let hourlyBarWidthFraction = 0.9
     private let statsOccupancyBarColor = Color.accentColor
     private let statsLandingBarColor = Color(red: 0.52, green: 0.72, blue: 0.95)
 
@@ -188,6 +190,7 @@ struct PatternStatsWindow: View {
                 }
             }
         }
+        .chartYScale(domain: .automatic(includesZero: true))
         .chartYAxisLabel("Aircraft")
         .chartXScale(domain: fullXDomain)
         .chartXAxis {
@@ -208,6 +211,7 @@ struct PatternStatsWindow: View {
                 }
             }
         }
+        .chartYScale(domain: .automatic(includesZero: true))
         .chartYAxisLabel("Landings")
         .chartXScale(domain: fullXDomain)
         .chartXAxis {
@@ -217,13 +221,18 @@ struct PatternStatsWindow: View {
 
     @ChartContentBuilder
     private func hourlyBarMark(hourStart: Date, value: Double, color: Color) -> some ChartContent {
-        let hourEnd = hourStart.addingTimeInterval(PatternHourlyStats.hourInterval)
-        BarMark(
-            xStart: .value("Hour", hourStart),
-            xEnd: .value("Hour", hourEnd),
-            y: .value("Count", value)
+        let hour = PatternHourlyStats.hourInterval
+        let inset = hour * (1 - hourlyBarWidthFraction) / 2
+        let barStart = hourStart.addingTimeInterval(inset)
+        let barEnd = hourStart.addingTimeInterval(hour - inset)
+        RectangleMark(
+            xStart: .value("Hour", barStart),
+            xEnd: .value("Hour", barEnd),
+            yStart: .value("Count", 0),
+            yEnd: .value("Count", value)
         )
         .foregroundStyle(color)
+        .cornerRadius(2)
     }
 
     @ChartContentBuilder
