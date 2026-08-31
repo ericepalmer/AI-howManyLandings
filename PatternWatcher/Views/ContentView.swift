@@ -31,6 +31,7 @@ struct BootstrapView: View {
             AppDelegate.engine = engine
             #endif
         }
+        .background(WindowMenuBridge())
         .sheet(isPresented: bindShowingNewAirportPicker) {
             AddAirportSheet(
                 openICAOs: Set(coordinator.openICAOs),
@@ -132,7 +133,7 @@ struct AirportWindowView: View {
         }
         .focusedValue(\.airportWindowICAO, icao)
         #if os(macOS)
-        .background(WindowMenuBridge(icao: icao))
+        .background(WindowMenuBridge())
         .background(AirportWindowCloseTracker(icao: icao, coordinator: coordinator))
         #endif
         .onAppear {
@@ -208,6 +209,7 @@ private struct AirportDetailView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
     @State private var trackDump: TrackDumpPayload?
+    @State private var showRightPanel = true
 
     var body: some View {
         @Bindable var engine = engine
@@ -237,65 +239,88 @@ private struct AirportDetailView: View {
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            Divider()
+            if showRightPanel {
+                Divider()
 
-            PatternTrackerView(
-                airport: airport,
-                aircraft: engine.aircraft(for: icao),
-                selectedICAO24: selectedTrackerBinding,
-                onDump: { ac in
-                    trackDump = TrackDumpPayload(
-                        id: UUID(),
-                        title: ac.snapshot.displayLabel,
-                        subtitle: "Pattern track",
-                        airportICAO: airport.icao,
-                        airportElevationFt: airport.elevationFt,
-                        icao24: ac.id,
-                        reportedKind: ac.flightState?.rawValue,
-                        reportedTime: ac.lastSeen,
-                        points: ac.track
-                    )
-                },
-                onPlanePicked: {},
-                onShowOccupancy: {
-                    coordinator.setSupplementaryOpen(
-                        true,
-                        icao: icao,
-                        kind: .patternGraph,
-                        openWindow: openWindow,
-                        dismissWindow: dismissWindow
-                    )
-                },
-                onShowStats: {
-                    coordinator.setSupplementaryOpen(
-                        true,
-                        icao: icao,
-                        kind: .stats,
-                        openWindow: openWindow,
-                        dismissWindow: dismissWindow
-                    )
-                },
-                onShowMETAR: {
-                    coordinator.setSupplementaryOpen(
-                        true,
-                        icao: icao,
-                        kind: .metar,
-                        openWindow: openWindow,
-                        dismissWindow: dismissWindow
-                    )
-                },
-                onShowADS: {
-                    coordinator.setSupplementaryOpen(
-                        true,
-                        icao: icao,
-                        kind: .adsFeed,
-                        openWindow: openWindow,
-                        dismissWindow: dismissWindow
-                    )
+                PatternTrackerView(
+                    airport: airport,
+                    aircraft: engine.aircraft(for: icao),
+                    selectedICAO24: selectedTrackerBinding,
+                    onDump: { ac in
+                        trackDump = TrackDumpPayload(
+                            id: UUID(),
+                            title: ac.snapshot.displayLabel,
+                            subtitle: "Pattern track",
+                            airportICAO: airport.icao,
+                            airportElevationFt: airport.elevationFt,
+                            icao24: ac.id,
+                            reportedKind: ac.flightState?.rawValue,
+                            reportedTime: ac.lastSeen,
+                            points: ac.track
+                        )
+                    },
+                    onPlanePicked: {},
+                    onShowOccupancy: {
+                        coordinator.setSupplementaryOpen(
+                            true,
+                            icao: icao,
+                            kind: .patternGraph,
+                            openWindow: openWindow,
+                            dismissWindow: dismissWindow
+                        )
+                    },
+                    onShowStats: {
+                        coordinator.setSupplementaryOpen(
+                            true,
+                            icao: icao,
+                            kind: .stats,
+                            openWindow: openWindow,
+                            dismissWindow: dismissWindow
+                        )
+                    },
+                    onShowMETAR: {
+                        coordinator.setSupplementaryOpen(
+                            true,
+                            icao: icao,
+                            kind: .metar,
+                            openWindow: openWindow,
+                            dismissWindow: dismissWindow
+                        )
+                    },
+                    onShowADS: {
+                        coordinator.setSupplementaryOpen(
+                            true,
+                            icao: icao,
+                            kind: .adsFeed,
+                            openWindow: openWindow,
+                            dismissWindow: dismissWindow
+                        )
+                    },
+                    onHidePanel: { showRightPanel = false }
+                )
+                .frame(width: 300)
+                .frame(maxHeight: .infinity, alignment: .top)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.22), value: showRightPanel)
+        .overlay(alignment: .trailing) {
+            if !showRightPanel {
+                Button {
+                    showRightPanel = true
+                } label: {
+                    Image(systemName: "sidebar.right")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 12)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
-            )
-            .frame(width: 300)
-            .frame(maxHeight: .infinity, alignment: .top)
+                .buttonStyle(.plain)
+                .padding(.trailing, 6)
+                .help("Show pattern panel")
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
         }
         .overlay {
             if !engine.hasLiveFeed(for: airport.icao), !engine.isRecordedReplayActive {
@@ -308,6 +333,17 @@ private struct AirportDetailView: View {
         }
         .animation(.easeInOut(duration: 0.28), value: engine.liveAirportICAOs.contains(airport.icao))
         .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showRightPanel.toggle()
+                } label: {
+                    Label(
+                        showRightPanel ? "Hide Panel" : "Show Panel",
+                        systemImage: "sidebar.right"
+                    )
+                }
+                .help(showRightPanel ? "Hide pattern panel" : "Show pattern panel")
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     engine.showingSettings = true

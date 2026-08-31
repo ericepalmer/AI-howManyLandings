@@ -8,7 +8,6 @@ import AppKit
 struct PatternOccupancyWindow: View {
     let airportICAO: String
     @Environment(TrackingEngine.self) private var engine
-    @Environment(OpenAirportCoordinator.self) private var coordinator
     @State private var windowDuration: TimeInterval = PatternOccupancy.defaultChartWindow
     @State private var magnificationAnchor: TimeInterval?
 
@@ -68,21 +67,6 @@ struct PatternOccupancyWindow: View {
                         .foregroundStyle(.secondary)
                 }
                 ToolbarItemGroup(placement: .automatic) {
-                    #if os(macOS)
-                    Button {
-                        Task {
-                            await PatternLogSaveService.save(
-                                coordinator: coordinator,
-                                engine: engine,
-                                focusedAirportICAO: airportICAO
-                            )
-                        }
-                    } label: {
-                        Label("Save log", systemImage: "square.and.arrow.down")
-                    }
-                    .help("Save pattern occupancy, landings, and aircraft state log")
-                    #endif
-
                     Button {
                         zoomIn()
                     } label: {

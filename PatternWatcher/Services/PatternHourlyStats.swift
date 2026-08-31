@@ -15,16 +15,16 @@ struct PatternHourlyBucket: Identifiable, Sendable, Equatable, Codable {
     }
 }
 
-/// Live summary values for the stats window.
+/// Live summary values for the stats window. Nil when the window has not elapsed yet.
 struct PatternStatsSnapshot: Sendable, Equatable {
-    var avgLast5Min: Double
-    var avgLast30Min: Double
-    var avgLastHour: Double
-    var avgLast24Hours: Double
-    var peakOccupancy: Int
-    var landingsLast5Min: Int
-    var landingsLast30Min: Int
-    var landingsLastHour: Int
+    var avgLast5Min: Double?
+    var avgLast30Min: Double?
+    var avgLastHour: Double?
+    var avgLast24Hours: Double?
+    var peakOccupancy: Int?
+    var landingsLast5Min: Int?
+    var landingsLast30Min: Int?
+    var landingsLastHour: Int?
 }
 
 enum PatternHourlyStats {
@@ -137,16 +137,101 @@ enum PatternHourlyStats {
         landingMarkers: [PatternLandingMarker],
         now: Date
     ) -> PatternStatsSnapshot {
-        PatternStatsSnapshot(
-            avgLast5Min: averageOccupancy(samples: occupancySamples, window: 5 * 60, now: now),
-            avgLast30Min: averageOccupancy(samples: occupancySamples, window: 30 * 60, now: now),
-            avgLastHour: averageOccupancy(samples: occupancySamples, window: hourInterval, now: now),
-            avgLast24Hours: averageOccupancy(samples: occupancySamples, window: 24 * hourInterval, now: now),
-            peakOccupancy: peakOccupancy(samples: occupancySamples, now: now),
-            landingsLast5Min: landingCount(markers: landingMarkers, window: 5 * 60, now: now),
-            landingsLast30Min: landingCount(markers: landingMarkers, window: 30 * 60, now: now),
-            landingsLastHour: landingCount(markers: landingMarkers, window: hourInterval, now: now)
+        let span = collectionSpan(
+            occupancySamples: occupancySamples,
+            landingMarkers: landingMarkers,
+            now: now
         )
+        let fiveMin: TimeInterval = 5 * 60
+        let thirtyMin: TimeInterval = 30 * 60
+        return PatternStatsSnapshot(
+            avgLast5Min: optionalAverage(
+                samples: occupancySamples,
+                window: fiveMin,
+                span: span,
+                now: now
+            ),
+            avgLast30Min: optionalAverage(
+                samples: occupancySamples,
+                window: thirtyMin,
+                span: span,
+                now: now
+            ),
+            avgLastHour: optionalAverage(
+                samples: occupancySamples,
+                window: hourInterval,
+                span: span,
+                now: now
+            ),
+            avgLast24Hours: optionalAverage(
+                samples: occupancySamples,
+                window: 24 * hourInterval,
+                span: span,
+                now: now
+            ),
+            peakOccupancy: occupancySamples.isEmpty
+                ? nil
+                : peakOccupancy(samples: occupancySamples, now: now),
+            landingsLast5Min: optionalLandingCount(
+                markers: landingMarkers,
+                window: fiveMin,
+                span: span,
+                now: now
+            ),
+            landingsLast30Min: optionalLandingCount(
+                markers: landingMarkers,
+                window: thirtyMin,
+                span: span,
+                now: now
+            ),
+            landingsLastHour: optionalLandingCount(
+                markers: landingMarkers,
+                window: hourInterval,
+                span: span,
+                now: now
+            )
+        )
+    }
+
+    /// Time since the first occupancy or landing record through `now`.
+    static func collectionSpan(
+        occupancySamples: [PatternOccupancySample],
+        landingMarkers: [PatternLandingMarker],
+        now: Date
+    ) -> TimeInterval {
+        var earliest: Date?
+        if let sampleStart = occupancySamples.map(\.time).min() {
+            earliest = sampleStart
+        }
+        if let landingStart = landingMarkers.map(\.time).min() {
+            if let existing = earliest {
+                earliest = min(existing, landingStart)
+            } else {
+                earliest = landingStart
+            }
+        }
+        guard let earliest else { return 0 }
+        return max(0, now.timeIntervalSince(earliest))
+    }
+
+    private static func optionalAverage(
+        samples: [PatternOccupancySample],
+        window: TimeInterval,
+        span: TimeInterval,
+        now: Date
+    ) -> Double? {
+        guard !samples.isEmpty, span >= window else { return nil }
+        return averageOccupancy(samples: samples, window: window, now: now)
+    }
+
+    private static func optionalLandingCount(
+        markers: [PatternLandingMarker],
+        window: TimeInterval,
+        span: TimeInterval,
+        now: Date
+    ) -> Int? {
+        guard span >= window else { return nil }
+        return landingCount(markers: markers, window: window, now: now)
     }
 
     private static func samplesInWindow(

@@ -1,11 +1,8 @@
 import Foundation
 import Observation
 import SwiftUI
-#if os(macOS)
-import AppKit
-#endif
 
-/// Supplementary windows toggled per airport from the Window menu.
+/// Supplementary windows opened from airport panel buttons.
 enum SupplementaryWindowKind: String, CaseIterable, Hashable, Sendable {
     case patternGraph
     case stats
@@ -26,7 +23,7 @@ enum SupplementaryWindowKind: String, CaseIterable, Hashable, Sendable {
         case .patternGraph: return "Pattern"
         case .stats: return "Stats"
         case .metar: return "METAR"
-        case .adsFeed: return "Display ADS"
+        case .adsFeed: return "ADS"
         }
     }
 }
@@ -40,8 +37,7 @@ final class OpenAirportCoordinator {
     var showingNewAirportPicker = false
     /// Last airport or supplementary window that was active (save-log target).
     var saveLogTargetICAO: String?
-    /// Mini pattern plot in the airport right panel (persisted; default on).
-    var showMiniPatternPlot: Bool = AppSettings.showMiniPatternPlot
+    private var showMiniPatternPlotByICAO: [String: Bool] = [:]
     private var openSupplementaryByICAO: [String: Set<SupplementaryWindowKind>] = [:]
 
     func registerOpen(_ icao: String) {
@@ -55,6 +51,7 @@ final class OpenAirportCoordinator {
     func unregisterOpen(_ icao: String) {
         openICAOs.removeAll { $0 == icao }
         openSupplementaryByICAO.removeValue(forKey: icao)
+        showMiniPatternPlotByICAO.removeValue(forKey: icao)
         refreshWindowMenu()
     }
 
@@ -86,17 +83,20 @@ final class OpenAirportCoordinator {
         saveLogTargetICAO = icao
     }
 
-    func setShowMiniPatternPlot(_ show: Bool) {
-        guard showMiniPatternPlot != show else { return }
-        showMiniPatternPlot = show
-        AppSettings.showMiniPatternPlot = show
+    func showMiniPatternPlot(for icao: String) -> Bool {
+        showMiniPatternPlotByICAO[icao] ?? AppSettings.showMiniPatternPlot
+    }
+
+    func setShowMiniPatternPlot(_ show: Bool, for icao: String) {
+        guard showMiniPatternPlot(for: icao) != show else { return }
+        showMiniPatternPlotByICAO[icao] = show
         refreshWindowMenu()
     }
 
-    func miniPlotBinding() -> Binding<Bool> {
+    func miniPlotBinding(for icao: String) -> Binding<Bool> {
         Binding(
-            get: { self.showMiniPatternPlot },
-            set: { self.setShowMiniPatternPlot($0) }
+            get: { self.showMiniPatternPlot(for: icao) },
+            set: { self.setShowMiniPatternPlot($0, for: icao) }
         )
     }
 
@@ -109,7 +109,6 @@ final class OpenAirportCoordinator {
         guard !set.contains(kind) else { return }
         set.insert(kind)
         openSupplementaryByICAO[icao] = set
-        refreshWindowMenu()
     }
 
     func unregisterSupplementaryOpen(icao: String, kind: SupplementaryWindowKind) {
@@ -120,7 +119,6 @@ final class OpenAirportCoordinator {
         } else {
             openSupplementaryByICAO[icao] = set
         }
-        refreshWindowMenu()
     }
 
     func setSupplementaryOpen(
@@ -170,7 +168,8 @@ final class OpenAirportCoordinator {
 
     #if os(macOS)
     private func refreshWindowMenu() {
-        AirportWindowMenuController.shared.scheduleRebuild()
+        WindowMenuController.shared.coordinator = self
+        WindowMenuController.shared.scheduleRebuild()
     }
     #endif
 }

@@ -8,9 +8,12 @@ enum PatternLogSaveService {
         coordinator: OpenAirportCoordinator?,
         engine: TrackingEngine?,
         focusedAirportICAO: String? = nil
-    ) async {
+    ) {
         guard let coordinator, let engine else {
-            NSSound.beep()
+            presentMessage(
+                "Save Log unavailable",
+                informative: "Open an airport window and try again."
+            )
             return
         }
 
@@ -19,11 +22,20 @@ enum PatternLogSaveService {
             ?? coordinator.openICAOs.last
 
         guard let icao else {
-            NSSound.beep()
+            presentMessage(
+                "No airport selected",
+                informative: "Open an airport window before saving a pattern log."
+            )
             return
         }
 
-        guard let url = await PatternLogSavePanel.saveLog(airportICAO: icao) else { return }
+        guard let url = PatternLogSavePanel.saveLog(airportICAO: icao) else { return }
+
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessed { url.stopAccessingSecurityScopedResource() }
+        }
+
         do {
             try engine.savePatternLog(for: icao, to: url)
         } catch {
@@ -33,9 +45,16 @@ enum PatternLogSaveService {
     }
 
     private static func presentError(_ error: Error) {
+        presentMessage(
+            "Could not save pattern log",
+            informative: error.localizedDescription
+        )
+    }
+
+    private static func presentMessage(_ message: String, informative: String) {
         let alert = NSAlert()
-        alert.messageText = "Could not save pattern log"
-        alert.informativeText = error.localizedDescription
+        alert.messageText = message
+        alert.informativeText = informative
         alert.alertStyle = .warning
         alert.runModal()
     }

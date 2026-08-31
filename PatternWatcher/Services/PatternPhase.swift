@@ -63,7 +63,7 @@ enum PatternPhase: String, Sendable, Equatable {
         if self == .leaving || self == .maneuvering || self == .ground {
             chip = name
         } else if let ident = runwayIdent, !ident.isEmpty {
-            chip = "\(name) \(RunwayApproach.directionIdent(ident))"
+            chip = "\(name) \(RunwayApproach.displayIdent(ident))"
         } else {
             chip = name
         }
@@ -269,7 +269,7 @@ enum PatternClassifier {
         state.liberalUncertain = next.liberalUncertain
         state.statusUnknown = next.statusUnknown
         if let ident = next.runwayIdent {
-            state.runwayIdent = RunwayApproach.directionIdent(ident)
+            state.runwayIdent = RunwayApproach.displayIdent(ident)
         } else if next.phase == .maneuvering,
                   !isRecentTakeoff(lastTakeoffAt: lastTakeoffAt, now: now) {
             state.runwayIdent = nil
@@ -380,7 +380,7 @@ enum PatternClassifier {
         let liberal = Geo.isNearFieldLiberal(distanceNM: distanceNM, altitudeAGLFt: agl)
 
         if let anyChosen, isFlare(chosen: anyChosen, point: point, heading: heading, agl: agl, speed: speed) {
-            return classifyResult(phase: .flare, runway: anyChosen.directionIdent)
+            return classifyResult(phase: .flare, runway: anyChosen.ident)
         }
 
         let finalMods = legStretchModifiers(previous: previous, leg: .final, liberal: liberal)
@@ -396,7 +396,7 @@ enum PatternClassifier {
         ) {
             return classifyResult(
                 phase: .final,
-                runway: anyChosen.directionIdent,
+                runway: anyChosen.ident,
                 isApproach: true,
                 legHold: finalMods.legHold,
                 liberalBoost: finalMods.liberalBoost
@@ -415,7 +415,7 @@ enum PatternClassifier {
         ) {
             return classifyResult(
                 phase: .final,
-                runway: anyChosen.directionIdent,
+                runway: anyChosen.ident,
                 legHold: finalMods.legHold,
                 liberalBoost: finalMods.liberalBoost
             )
@@ -434,7 +434,7 @@ enum PatternClassifier {
         ) {
             return classifyResult(
                 phase: .base,
-                runway: patternChosen.directionIdent,
+                runway: patternChosen.ident,
                 legHold: baseMods.legHold,
                 liberalBoost: baseMods.liberalBoost
             )
@@ -487,7 +487,7 @@ enum PatternClassifier {
            ) {
             return classifyResult(
                 phase: .crosswind,
-                runway: crosswind.directionIdent,
+                runway: crosswind.ident,
                 legHold: crosswindMods.legHold,
                 liberalBoost: crosswindMods.liberalBoost
             )
@@ -505,7 +505,7 @@ enum PatternClassifier {
            ) {
             return classifyResult(
                 phase: .downwind,
-                runway: patternChosen.directionIdent,
+                runway: patternChosen.ident,
                 legHold: downwindMods.legHold,
                 liberalBoost: downwindMods.liberalBoost
             )
@@ -525,7 +525,7 @@ enum PatternClassifier {
         ) {
             return classifyResult(
                 phase: .downwind,
-                runway: activeDW.directionIdent,
+                runway: activeDW.ident,
                 legHold: false,
                 liberalBoost: activeDWMods.2
             )
@@ -562,7 +562,7 @@ enum PatternClassifier {
         ) {
             return classifyResult(
                 phase: held,
-                runway: turnChosen?.directionIdent ?? activeRunwayDirection
+                runway: turnChosen?.ident ?? activeRunwayDirection
             )
         }
 
@@ -581,7 +581,7 @@ enum PatternClassifier {
             ) {
                 return classifyResult(
                     phase: .leaving,
-                    runway: anyChosen?.directionIdent ?? activeRunwayDirection
+                    runway: anyChosen?.ident ?? activeRunwayDirection
                 )
             }
             return classifyResult(phase: .maneuvering, runway: nil)
@@ -601,7 +601,7 @@ enum PatternClassifier {
         ) {
             return classifyResult(
                 phase: .leaving,
-                runway: anyChosen?.directionIdent ?? activeRunwayDirection
+                runway: anyChosen?.ident ?? activeRunwayDirection
             )
         }
 
@@ -637,7 +637,7 @@ enum PatternClassifier {
                 } == true
             return PatternClassifyResult(
                 phase: previous,
-                runwayIdent: holdChosen?.directionIdent ?? activeRunwayDirection,
+                runwayIdent: holdChosen?.ident ?? activeRunwayDirection,
                 isApproach: approachHold,
                 heldLeg: heldLegMarker(phase: previous, isApproach: approachHold),
                 liberalUncertain: false
@@ -806,10 +806,10 @@ enum PatternClassifier {
         guard frame.along > -0.15 / stretch else { return nil }
         let upwindMax = upwindMaxAGLFt + (stretch > 1 ? 250 : 0)
         if agl < departureMaxAGLFt {
-            return (.departure, chosen.directionIdent)
+            return (.departure, chosen.ident)
         }
         if agl <= upwindMax {
-            return (.upwind, chosen.directionIdent)
+            return (.upwind, chosen.ident)
         }
         return nil
     }
@@ -1308,7 +1308,7 @@ enum PatternClassifier {
         ) {
             return classifyResult(
                 phase: .final,
-                runway: anyChosen.directionIdent,
+                runway: anyChosen.ident,
                 isApproach: true,
                 liberalBoost: true
             )
@@ -1324,7 +1324,7 @@ enum PatternClassifier {
             category: category,
             stretch: stretch
         ) {
-            return classifyResult(phase: .final, runway: anyChosen.directionIdent, liberalBoost: true)
+            return classifyResult(phase: .final, runway: anyChosen.ident, liberalBoost: true)
         }
         if let patternChosen, isBase(
             chosen: patternChosen,
@@ -1336,7 +1336,7 @@ enum PatternClassifier {
             previousSignedCross: nil,
             stretch: stretch
         ) {
-            return classifyResult(phase: .base, runway: patternChosen.directionIdent, liberalBoost: true)
+            return classifyResult(phase: .base, runway: patternChosen.ident, liberalBoost: true)
         }
         if let crosswind = matchingCrosswind(
             candidates: crosswindCandidates(
@@ -1351,7 +1351,7 @@ enum PatternClassifier {
             distanceNM: distanceNM,
             stretch: stretch
         ) {
-            return classifyResult(phase: .crosswind, runway: crosswind.directionIdent, liberalBoost: true)
+            return classifyResult(phase: .crosswind, runway: crosswind.ident, liberalBoost: true)
         }
         if sawCrosswind,
            let patternChosen,
@@ -1362,7 +1362,7 @@ enum PatternClassifier {
             agl: agl,
             stretch: downwindStretch
            ) {
-            return classifyResult(phase: .downwind, runway: patternChosen.directionIdent, liberalBoost: true)
+            return classifyResult(phase: .downwind, runway: patternChosen.ident, liberalBoost: true)
         }
         if let activeDW = activeRunwayDownwind(
             approaches: approaches,
@@ -1373,7 +1373,7 @@ enum PatternClassifier {
             distanceNM: distanceNM,
             stretch: downwindStretch
         ) {
-            return classifyResult(phase: .downwind, runway: activeDW.directionIdent, liberalBoost: true)
+            return classifyResult(phase: .downwind, runway: activeDW.ident, liberalBoost: true)
         }
         return nil
     }

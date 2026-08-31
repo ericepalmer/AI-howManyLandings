@@ -14,7 +14,7 @@ struct PatternOccupancySample: Identifiable, Sendable, Equatable, Codable {
 
 /// Landing tick on the pattern graph (confirmed touchdown or inferred from final/flare loss).
 struct PatternLandingMarker: Identifiable, Sendable, Equatable, Codable {
-    let id = UUID()
+    var id = UUID()
     var time: Date
     /// ADS-B on-ground edge; false = kinematic or ETA-inferred.
     var confirmed: Bool
@@ -24,7 +24,7 @@ struct PatternLandingMarker: Identifiable, Sendable, Equatable, Codable {
 
 /// Takeoff tick on the pattern graph (ADS-B ground→airborne or inferred touch-and-go climb-out).
 struct PatternTakeoffMarker: Identifiable, Sendable, Equatable, Codable {
-    let id = UUID()
+    var id = UUID()
     var time: Date
     /// ADS-B left-ground edge; false = inferred after a recent landing.
     var confirmed: Bool

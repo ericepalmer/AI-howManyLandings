@@ -52,10 +52,11 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = A1A1A1A1A1A1A1A1A1A1A10A /* Build configuration list for PBXNativeTarget "PatternWatcher" */;
 			buildPhases = (
+				A1A1A1A1A1A1A1A1A1A1A111 /* Bump Build Number */,
 				A1A1A1A1A1A1A1A1A1A1A107 /* Sources */,
 				A1A1A1A1A1A1A1A1A1A1A103 /* Frameworks */,
 				A1A1A1A1A1A1A1A1A1A1A108 /* Resources */,
-				A1A1A1A1A1A1A1A1A1A1A110 /* Increment Build Number */,
+				A1A1A1A1A1A1A1A1A1A1A110 /* Stamp Build Number */,
 			);
 			buildRules = (
 			);
@@ -114,7 +115,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		A1A1A1A1A1A1A1A1A1A1A110 /* Increment Build Number */ = {
+		A1A1A1A1A1A1A1A1A1A1A110 /* Stamp Build Number */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
@@ -123,9 +124,31 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
-				"$(SRCROOT)/scripts/increment_build.sh",
+				"$(SRCROOT)/scripts/stamp_build_number.sh",
+				"$(SRCROOT)/.build-number",
 			);
-			name = "Increment Build Number";
+			name = "Stamp Build Number";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${SRCROOT}/scripts/stamp_build_number.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+		A1A1A1A1A1A1A1A1A1A1A111 /* Bump Build Number */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/scripts/bump_build_number.sh",
+			);
+			name = "Bump Build Number";
 			outputFileListPaths = (
 			);
 			outputPaths = (
@@ -133,7 +156,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "\"${SRCROOT}/scripts/increment_build.sh\"\n";
+			shellScript = "\"${SRCROOT}/scripts/bump_build_number.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */
@@ -218,7 +241,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_USER_SELECTED_FILES = readonly;
+				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
                 INFOPLIST_KEY_CFBundleDisplayName = "Pattern Watcher";
 				INFOPLIST_KEY_CFBundleName = "Pattern Watcher";
@@ -264,7 +287,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_USER_SELECTED_FILES = readonly;
+				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
                 INFOPLIST_KEY_CFBundleDisplayName = "Pattern Watcher";
 				INFOPLIST_KEY_CFBundleName = "Pattern Watcher";

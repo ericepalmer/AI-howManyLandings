@@ -11,6 +11,7 @@ struct PatternTrackerView: View {
     var onShowStats: () -> Void = {}
     var onShowMETAR: () -> Void = {}
     var onShowADS: () -> Void = {}
+    var onHidePanel: (() -> Void)?
     @Environment(TrackingEngine.self) private var engine
     @State private var phaseEditorICAO: String?
 
@@ -37,12 +38,29 @@ struct PatternTrackerView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Text("Pattern")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                if let onHidePanel {
+                    Button(action: onHidePanel) {
+                        Image(systemName: "sidebar.right")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Hide panel")
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+
             if !panelAircraft.isEmpty {
                 Text("\(panelAircraft.count) aircraft · \(occupancyCount) toward landing")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
+                    .padding(.bottom, 8)
 
                 Divider()
             }

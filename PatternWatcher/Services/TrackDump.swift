@@ -62,6 +62,16 @@ enum Clipboard {
         UIPasteboard.general.string = text
         #endif
     }
+
+    static func pasteboardString() -> String? {
+        #if os(macOS)
+        NSPasteboard.general.string(forType: .string)
+        #elseif os(iOS)
+        UIPasteboard.general.string
+        #else
+        nil
+        #endif
+    }
 }
 
 enum TrackDumpFormatter {

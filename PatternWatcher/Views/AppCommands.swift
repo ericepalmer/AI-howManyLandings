@@ -1,12 +1,20 @@
 import SwiftUI
 
-/// File menu commands (safe to attach to bootstrap and airport scenes).
+/// File menu commands (attach to airport scene).
 struct FileCommands: Commands {
     @FocusedValue(\.airportWindowICAO) private var focusedAirportICAO
     var coordinator: OpenAirportCoordinator
     var engine: TrackingEngine
 
     var body: some Commands {
+        #if os(macOS)
+        CommandGroup(replacing: .appInfo) {
+            Button("About \(AppIdentity.name)") {
+                AboutPresenter.show()
+            }
+        }
+        #endif
+
         CommandGroup(replacing: .newItem) {
             Button("New Airport") {
                 coordinator.requestNewAirport()
@@ -16,15 +24,12 @@ struct FileCommands: Commands {
         #if os(macOS)
         CommandGroup(after: .newItem) {
             Button(saveLogTitle) {
-                Task {
-                    await PatternLogSaveService.save(
-                        coordinator: coordinator,
-                        engine: engine,
-                        focusedAirportICAO: focusedAirportICAO
-                    )
-                }
+                PatternLogSaveService.save(
+                    coordinator: coordinator,
+                    engine: engine,
+                    focusedAirportICAO: focusedAirportICAO
+                )
             }
-            .disabled(saveLogICAO == nil)
         }
         #endif
 
@@ -41,12 +46,25 @@ struct FileCommands: Commands {
         }
 
         CommandGroup(replacing: .toolbar) {
-            EmptyView()
+            #if os(macOS)
+            Button("Show Clipboard") {
+                ClipboardPresenter.show()
+            }
+            #endif
         }
 
         CommandGroup(replacing: .sidebar) {
             EmptyView()
         }
+
+        #if os(macOS)
+        CommandGroup(replacing: .windowArrangement) {
+            EmptyView()
+        }
+        CommandGroup(replacing: .windowSize) {
+            EmptyView()
+        }
+        #endif
     }
 
     #if os(macOS)

@@ -6,19 +6,40 @@ import AppKit
 
 #if os(macOS)
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private static let unwantedTopLevelMenus = ["View", "Edit"]
+    private static let unwantedTopLevelMenus = ["Edit"]
     /// Set before windows close on quit so we keep the restore list in UserDefaults.
     static var isTerminating = false
     static weak var coordinator: OpenAirportCoordinator?
     static weak var engine: TrackingEngine?
+
+    private var menuObserver: NSObjectProtocol?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         removeUnwantedMenus()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        Task { @MainActor [weak self] in
-            self?.removeUnwantedMenus()
+        menuObserver = NotificationCenter.default.addObserver(
+            forName: NSMenu.didAddItemNotification,
+            object: nil,
+            queue: .main
+        ) { notification in
+            guard let menu = notification.object as? NSMenu,
+                  menu === NSApp.mainMenu?.item(withTitle: "Window")?.submenu
+            else { return }
+            if menu.items.contains(where: { $0.tag == 9_401 }) { return }
+            WindowMenuController.shared.scheduleRebuild()
+        }
+
+        Task { @MainActor in
+            removeUnwantedMenus()
+            WindowMenuController.shared.scheduleRebuild()
+        }
+    }
+
+    deinit {
+        if let menuObserver {
+            NotificationCenter.default.removeObserver(menuObserver)
         }
     }
 
@@ -76,9 +97,6 @@ struct PatternWatcherApp: App {
         }
         .modelContainer(for: [StoredAirport.self])
         .defaultSize(width: 1240, height: 820)
-        .commands {
-            FileCommands(coordinator: coordinator, engine: engine)
-        }
 
         WindowGroup(id: "ads-feed", for: String.self) { $icao in
             if let icao {

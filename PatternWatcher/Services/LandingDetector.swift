@@ -321,7 +321,8 @@ struct LandingDetector: Sendable {
                 memory: &memory
             )
             if memory.pattern.phase == .final || memory.pattern.phase == .flare,
-               let direction = memory.pattern.runwayIdent {
+               let ident = memory.pattern.runwayIdent {
+                let direction = RunwayApproach.directionIdent(ident)
                 let score = nearestThresholdDistanceNM(
                     coordinate: snapshot.coordinate,
                     direction: direction,

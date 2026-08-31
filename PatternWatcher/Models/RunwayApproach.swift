@@ -14,6 +14,11 @@ struct RunwayApproach: Sendable, Hashable {
     /// Numeric runway direction only (`12L` / `12R` → `12`). Used for active runway.
     var directionIdent: String { Self.directionIdent(ident) }
 
+    /// Uppercase ident for chips and callouts (`12L`, `27R`, …).
+    static func displayIdent(_ ident: String) -> String {
+        ident.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    }
+
     /// Strip parallel suffixes so parallel strips share one active direction.
     static func directionIdent(_ ident: String) -> String {
         let trimmed = ident.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()

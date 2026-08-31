@@ -12,7 +12,7 @@ struct PatternAccessoryPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if coordinator.showMiniPatternPlot {
+            if coordinator.showMiniPatternPlot(for: airportICAO) {
                 PatternOccupancyMiniChart(airportICAO: airportICAO)
                     .frame(height: 72)
                     .padding(8)
@@ -23,7 +23,7 @@ struct PatternAccessoryPanel: View {
                     }
                     .overlay(alignment: .topTrailing) {
                         Button {
-                            coordinator.setShowMiniPatternPlot(false)
+                            coordinator.setShowMiniPatternPlot(false, for: airportICAO)
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .symbolRenderingMode(.palette)
@@ -47,26 +47,11 @@ struct PatternAccessoryPanel: View {
                     .frame(maxWidth: .infinity)
                 Button("METAR", action: onShowMETAR)
                     .frame(maxWidth: .infinity)
-                Button("Display ADS", action: onShowADS)
+                Button("ADS", action: onShowADS)
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-
-            #if os(macOS)
-            Button("Save log…") {
-                Task {
-                    await PatternLogSaveService.save(
-                        coordinator: coordinator,
-                        engine: engine,
-                        focusedAirportICAO: airportICAO
-                    )
-                }
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .frame(maxWidth: .infinity)
-            #endif
         }
         .frame(maxWidth: .infinity)
     }
