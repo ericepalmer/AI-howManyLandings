@@ -65,7 +65,7 @@ enum PatternOccupancy {
     /// Full pattern graph: maximum zoom-out on the time axis.
     static let fullChartWindow: TimeInterval = 4 * 60 * 60
     /// Default visible range when the pattern graph opens.
-    static let defaultChartWindow: TimeInterval = 30 * 60
+    static let defaultChartWindow: TimeInterval = 20 * 60
     /// Minimum zoom-in on the time axis.
     static let minChartWindow: TimeInterval = 5 * 60
     /// Mini sidebar chart: panel width spans this window.

@@ -143,20 +143,19 @@ struct PatternStatsWindow: View {
     private var hourlyHistoryCharts: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: true) {
-                VStack(alignment: .leading, spacing: 8) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Hourly average aircraft in pattern")
-                            .font(.subheadline.weight(.semibold))
-                        occupancyHourlyChart
-                            .frame(width: chartContentWidth, height: 150)
-                    }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Hourly average aircraft in pattern")
+                        .font(.subheadline.weight(.semibold))
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Hourly landings")
-                            .font(.subheadline.weight(.semibold))
-                        landingsHourlyChart
-                            .frame(width: chartContentWidth, height: 130)
-                    }
+                    occupancyHourlyChart
+                        .frame(width: chartContentWidth, height: 140)
+
+                    Text("Hourly landings")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.top, 4)
+
+                    landingsHourlyChart
+                        .frame(width: chartContentWidth, height: 120)
                 }
                 .id("hourlyCharts")
             }
@@ -192,7 +191,7 @@ struct PatternStatsWindow: View {
         .chartYAxisLabel("Aircraft")
         .chartXScale(domain: fullXDomain)
         .chartXAxis {
-            hourlyDateAxisMarks()
+            hourlyGridAxisMarks()
         }
     }
 
@@ -233,6 +232,18 @@ struct PatternStatsWindow: View {
             RuleMark(x: .value("Midnight", date))
                 .foregroundStyle(Color.primary.opacity(0.28))
                 .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+        }
+    }
+
+    @AxisContentBuilder
+    private func hourlyGridAxisMarks() -> some AxisContent {
+        AxisMarks(values: .stride(by: .hour, count: 1)) { value in
+            if let date = value.as(Date.self), Calendar.current.component(.hour, from: date) == 0 {
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 1.2))
+                    .foregroundStyle(Color.primary.opacity(0.28))
+            } else {
+                AxisGridLine()
+            }
         }
     }
 

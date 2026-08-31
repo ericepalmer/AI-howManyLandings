@@ -78,7 +78,7 @@ struct PatternOccupancyWindow: View {
             #endif
             .toolbar {
                 ToolbarItem(placement: .automatic) {
-                    Text("30 min · scroll for 4 hr")
+                    Text("20 min · scroll for 4 hr")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }

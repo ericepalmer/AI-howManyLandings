@@ -4,13 +4,14 @@ import SwiftUI
 
 /// Stable Window-menu airport toggles (SwiftUI `Commands` rebuilds cause flicker).
 @MainActor
-final class WindowMenuController: NSObject {
+final class WindowMenuController: NSObject, NSMenuDelegate {
     static let shared = WindowMenuController()
 
     weak var coordinator: OpenAirportCoordinator?
 
     private static let airportSectionTag = 9_401
     private var rebuildWorkItem: DispatchWorkItem?
+    private weak var windowMenu: NSMenu?
 
     func scheduleRebuild() {
         if let coordinator = AppDelegate.coordinator {
@@ -32,6 +33,7 @@ final class WindowMenuController: NSObject {
             return
         }
 
+        installWindowMenuDelegate(windowMenu)
         stabilizeWindowMenu(windowMenu)
         removeAirportSection(from: windowMenu)
 
@@ -58,18 +60,43 @@ final class WindowMenuController: NSObject {
         }
     }
 
+    func menuWillOpen(_ menu: NSMenu) {
+        stabilizeWindowMenu(menu)
+        if menu === windowMenu,
+           coordinator != nil,
+           !menu.items.contains(where: { $0.tag == Self.airportSectionTag }) {
+            rebuildAirportMenus()
+        }
+    }
+
+    private func installWindowMenuDelegate(_ menu: NSMenu) {
+        windowMenu = menu
+        if menu.delegate !== self {
+            menu.delegate = self
+        }
+    }
+
     private func stabilizeWindowMenu(_ menu: NSMenu) {
         for item in menu.items where item.tag != Self.airportSectionTag {
-            if item.title == "Move & Resize" || item.title.contains("Tile") {
+            if shouldHideWindowMenuItem(item.title) {
                 item.isHidden = true
             }
             if let submenu = item.submenu {
-                for sub in submenu.items {
-                    if sub.title.contains("Tile") || sub.title == "Fill" || sub.title == "Center" {
-                        sub.isHidden = true
-                    }
-                }
+                stabilizeWindowMenu(submenu)
             }
+        }
+    }
+
+    private func shouldHideWindowMenuItem(_ title: String) -> Bool {
+        let lower = title.lowercased()
+        if lower.contains("tile") { return true }
+        if lower.contains("tab") { return true }
+        if lower.contains("merge") && lower.contains("window") { return true }
+        switch title {
+        case "Move & Resize", "Fill", "Center", "Enter Full Screen":
+            return true
+        default:
+            return false
         }
     }
 

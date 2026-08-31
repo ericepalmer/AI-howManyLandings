@@ -57,15 +57,6 @@ struct FileCommands: Commands {
         CommandGroup(replacing: .sidebar) {
             EmptyView()
         }
-
-        #if os(macOS)
-        CommandGroup(replacing: .windowArrangement) {
-            EmptyView()
-        }
-        CommandGroup(replacing: .windowSize) {
-            EmptyView()
-        }
-        #endif
     }
 
     #if os(macOS)

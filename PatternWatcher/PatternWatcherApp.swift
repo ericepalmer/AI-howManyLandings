@@ -12,23 +12,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static weak var coordinator: OpenAirportCoordinator?
     static weak var engine: TrackingEngine?
 
-    private var menuObserver: NSObjectProtocol?
-
     func applicationWillFinishLaunching(_ notification: Notification) {
+        NSWindow.allowsAutomaticWindowTabbing = false
         removeUnwantedMenus()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        menuObserver = NotificationCenter.default.addObserver(
-            forName: NSMenu.didAddItemNotification,
+        Self.disallowTabbingOnAllWindows()
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
             object: nil,
             queue: .main
-        ) { notification in
-            guard let menu = notification.object as? NSMenu,
-                  menu === NSApp.mainMenu?.item(withTitle: "Window")?.submenu
-            else { return }
-            if menu.items.contains(where: { $0.tag == 9_401 }) { return }
-            WindowMenuController.shared.scheduleRebuild()
+        ) { _ in
+            Task { @MainActor in
+                AppDelegate.disallowTabbingOnAllWindows()
+            }
         }
 
         Task { @MainActor in
@@ -37,9 +35,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    deinit {
-        if let menuObserver {
-            NotificationCenter.default.removeObserver(menuObserver)
+    @MainActor
+    static func disallowTabbingOnAllWindows() {
+        for window in NSApp.windows {
+            window.tabbingMode = .disallowed
         }
     }
 
@@ -85,7 +84,10 @@ struct PatternWatcherApp: App {
         .modelContainer(for: [StoredAirport.self])
         .defaultSize(width: 480, height: 360)
         .commands {
-            FileCommands(coordinator: coordinator, engine: engine)
+            SharedMenuCommands()
+            if AppSettings.openAirportICAOs.isEmpty {
+                FileCommands(coordinator: coordinator, engine: engine)
+            }
         }
 
         WindowGroup(id: "airport", for: String.self) { $icao in
@@ -98,6 +100,7 @@ struct PatternWatcherApp: App {
         .modelContainer(for: [StoredAirport.self])
         .defaultSize(width: 1240, height: 820)
         .commands {
+            SharedMenuCommands()
             FileCommands(coordinator: coordinator, engine: engine)
         }
 
@@ -111,6 +114,9 @@ struct PatternWatcherApp: App {
         .environment(coordinator)
         #if os(macOS)
         .defaultSize(width: 920, height: 560)
+        .commands {
+            SharedMenuCommands()
+        }
         #endif
 
         WindowGroup(id: "pattern-occupancy", for: String.self) { $icao in
@@ -123,6 +129,9 @@ struct PatternWatcherApp: App {
         .environment(coordinator)
         #if os(macOS)
         .defaultSize(width: 720, height: 460)
+        .commands {
+            SharedMenuCommands()
+        }
         #endif
 
         WindowGroup(id: "pattern-stats", for: String.self) { $icao in
@@ -135,6 +144,9 @@ struct PatternWatcherApp: App {
         .environment(coordinator)
         #if os(macOS)
         .defaultSize(width: 720, height: 560)
+        .commands {
+            SharedMenuCommands()
+        }
         #endif
 
         WindowGroup(id: "metar", for: String.self) { $station in
@@ -147,6 +159,9 @@ struct PatternWatcherApp: App {
         .environment(coordinator)
         #if os(macOS)
         .defaultSize(width: 480, height: 420)
+        .commands {
+            SharedMenuCommands()
+        }
         #endif
 
         #if os(macOS)
@@ -155,6 +170,9 @@ struct PatternWatcherApp: App {
                 .environment(engine)
         }
         .defaultSize(width: 460, height: 520)
+        .commands {
+            SharedMenuCommands()
+        }
         #endif
     }
 }
