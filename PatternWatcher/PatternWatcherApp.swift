@@ -14,11 +14,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSWindow.allowsAutomaticWindowTabbing = false
+        UserDefaults.standard.set(false, forKey: "NSQuitAlwaysKeepsWindows")
         removeUnwantedMenus()
+    }
+
+    func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
+        false
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.disallowTabbingOnAllWindows()
+        WindowMenuController.installObservers()
+        AirportWindowCloseObserver.install()
         NotificationCenter.default.addObserver(
             forName: NSWindow.didBecomeKeyNotification,
             object: nil,
@@ -26,12 +33,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { _ in
             Task { @MainActor in
                 AppDelegate.disallowTabbingOnAllWindows()
+                AppDelegate.coordinator?.syncActiveAirportFromKeyWindow()
+                FileMenuController.syncSaveLogTitle(icao: AppDelegate.coordinator?.activeSaveLogICAO)
+                WindowMenuController.shared.scheduleSyncMenu()
             }
         }
 
         Task { @MainActor in
             removeUnwantedMenus()
-            WindowMenuController.shared.scheduleRebuild()
+            AppDelegate.coordinator?.syncActiveAirportFromKeyWindow()
+            FileMenuController.syncSaveLogTitle(icao: AppDelegate.coordinator?.activeSaveLogICAO)
+            WindowMenuController.shared.scheduleSyncMenu()
         }
     }
 
@@ -46,6 +58,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Self.isTerminating = true
         Self.coordinator?.snapshotRestoreList()
         return .terminateNow
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        Self.isTerminating = true
+        Self.coordinator?.snapshotRestoreList()
     }
 
     private func removeUnwantedMenus() {
@@ -84,10 +101,8 @@ struct PatternWatcherApp: App {
         .modelContainer(for: [StoredAirport.self])
         .defaultSize(width: 480, height: 360)
         .commands {
-            SharedMenuCommands()
-            if AppSettings.openAirportICAOs.isEmpty {
-                FileCommands(coordinator: coordinator, engine: engine)
-            }
+            WindowStabilizerCommands()
+            FileCommands(coordinator: coordinator, engine: engine)
         }
 
         WindowGroup(id: "airport", for: String.self) { $icao in
@@ -100,7 +115,7 @@ struct PatternWatcherApp: App {
         .modelContainer(for: [StoredAirport.self])
         .defaultSize(width: 1240, height: 820)
         .commands {
-            SharedMenuCommands()
+            WindowStabilizerCommands()
             FileCommands(coordinator: coordinator, engine: engine)
         }
 
@@ -114,9 +129,7 @@ struct PatternWatcherApp: App {
         .environment(coordinator)
         #if os(macOS)
         .defaultSize(width: 920, height: 560)
-        .commands {
-            SharedMenuCommands()
-        }
+        .commands { WindowStabilizerCommands() }
         #endif
 
         WindowGroup(id: "pattern-occupancy", for: String.self) { $icao in
@@ -129,9 +142,7 @@ struct PatternWatcherApp: App {
         .environment(coordinator)
         #if os(macOS)
         .defaultSize(width: 720, height: 460)
-        .commands {
-            SharedMenuCommands()
-        }
+        .commands { WindowStabilizerCommands() }
         #endif
 
         WindowGroup(id: "pattern-stats", for: String.self) { $icao in
@@ -144,9 +155,7 @@ struct PatternWatcherApp: App {
         .environment(coordinator)
         #if os(macOS)
         .defaultSize(width: 720, height: 560)
-        .commands {
-            SharedMenuCommands()
-        }
+        .commands { WindowStabilizerCommands() }
         #endif
 
         WindowGroup(id: "metar", for: String.self) { $station in
@@ -159,9 +168,7 @@ struct PatternWatcherApp: App {
         .environment(coordinator)
         #if os(macOS)
         .defaultSize(width: 480, height: 420)
-        .commands {
-            SharedMenuCommands()
-        }
+        .commands { WindowStabilizerCommands() }
         #endif
 
         #if os(macOS)
@@ -170,9 +177,7 @@ struct PatternWatcherApp: App {
                 .environment(engine)
         }
         .defaultSize(width: 460, height: 520)
-        .commands {
-            SharedMenuCommands()
-        }
+        .commands { WindowStabilizerCommands() }
         #endif
     }
 }

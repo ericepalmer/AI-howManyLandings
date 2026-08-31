@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Menu customizations applied on every scene so the Window menu stays consistent.
-struct SharedMenuCommands: Commands {
+/// Hides tiling / resize groups on every scene so the Window menu does not change with focus.
+struct WindowStabilizerCommands: Commands {
     var body: some Commands {
         #if os(macOS)
         CommandGroup(replacing: .windowArrangement) {

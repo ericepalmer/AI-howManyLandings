@@ -1,7 +1,7 @@
 #if os(macOS)
 import SwiftUI
 
-/// Wires the stable AppKit Window menu (avoids SwiftUI menu flicker).
+/// Syncs the AppKit Window menu when a root window appears.
 struct WindowMenuBridge: View {
     @Environment(OpenAirportCoordinator.self) private var coordinator
 
@@ -9,10 +9,8 @@ struct WindowMenuBridge: View {
         Color.clear
             .frame(width: 0, height: 0)
             .onAppear {
-                let menu = WindowMenuController.shared
-                menu.coordinator = coordinator
                 AppDelegate.coordinator = coordinator
-                menu.scheduleRebuild()
+                WindowMenuController.shared.scheduleSyncMenu()
             }
     }
 }

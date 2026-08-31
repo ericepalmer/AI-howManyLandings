@@ -3,7 +3,7 @@ import SwiftUI
 /// File menu commands (attach to airport scene).
 struct FileCommands: Commands {
     @FocusedValue(\.airportWindowICAO) private var focusedAirportICAO
-    var coordinator: OpenAirportCoordinator
+    @Bindable var coordinator: OpenAirportCoordinator
     var engine: TrackingEngine
 
     var body: some Commands {
@@ -61,9 +61,10 @@ struct FileCommands: Commands {
 
     #if os(macOS)
     private var saveLogICAO: String? {
-        focusedAirportICAO
-            ?? coordinator.saveLogTargetICAO
-            ?? coordinator.openICAOs.last
+        if let focused = focusedAirportICAO, coordinator.openICAOs.contains(focused) {
+            return focused
+        }
+        return coordinator.activeSaveLogICAO
     }
 
     private var saveLogTitle: String {

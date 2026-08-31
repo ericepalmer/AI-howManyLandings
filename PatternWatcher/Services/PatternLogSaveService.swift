@@ -17,9 +17,12 @@ enum PatternLogSaveService {
             return
         }
 
-        let icao = focusedAirportICAO
-            ?? coordinator.saveLogTargetICAO
-            ?? coordinator.openICAOs.last
+        let icao: String?
+        if let focusedAirportICAO, coordinator.openICAOs.contains(focusedAirportICAO) {
+            icao = focusedAirportICAO
+        } else {
+            icao = coordinator.activeSaveLogICAO
+        }
 
         guard let icao else {
             presentMessage(

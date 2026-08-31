@@ -29,6 +29,11 @@ struct BootstrapView: View {
             #if os(macOS)
             AppDelegate.coordinator = coordinator
             AppDelegate.engine = engine
+            if AppSettings.openAirportICAOs.isEmpty {
+                coordinator.finishLaunchRestore()
+            } else {
+                coordinator.beginLaunchRestore(savedICAOs: AppSettings.openAirportICAOs)
+            }
             #endif
         }
         .background(WindowMenuBridge())
@@ -53,9 +58,9 @@ struct BootstrapView: View {
         let toOpen = AppSettings.openAirportICAOs
         guard !toOpen.isEmpty else { return }
         for icao in toOpen {
-            coordinator.registerOpen(icao)
             openWindow(id: "airport", value: icao)
         }
+        coordinator.finishLaunchRestore()
         syncTrackedAirports()
         dismissWindow(id: "bootstrap")
     }
@@ -134,23 +139,43 @@ struct AirportWindowView: View {
         .focusedValue(\.airportWindowICAO, icao)
         #if os(macOS)
         .background(WindowMenuBridge())
-        .background(AirportWindowCloseTracker(icao: icao, coordinator: coordinator))
+        .background(AirportWindowCloseTracker(icao: icao, role: .main, coordinator: coordinator))
         #endif
         .onAppear {
             engine.attach(modelContext: modelContext)
             AppDelegate.coordinator = coordinator
             AppDelegate.engine = engine
-            coordinator.setSaveLogTarget(icao)
+            #if os(macOS)
+            if !coordinator.launchRestoreComplete {
+                let saved = AppSettings.openAirportICAOs
+                if saved.contains(icao) {
+                    coordinator.registerOpen(icao)
+                } else {
+                    DispatchQueue.main.async {
+                        dismissWindow(id: "airport", value: icao)
+                    }
+                    return
+                }
+            } else {
+                coordinator.registerOpen(icao)
+            }
+            #else
             coordinator.registerOpen(icao)
+            #endif
             syncTrackedAirports()
         }
         .onDisappear {
             #if os(macOS)
             guard !AppDelegate.isTerminating else { return }
-            #endif
-            coordinator.unregisterOpen(icao)
             coordinator.dismissAllSupplementary(for: icao, dismissWindow: dismissWindow)
             syncTrackedAirports()
+            if coordinator.openICAOs.isEmpty {
+                openWindow(id: "bootstrap")
+            }
+            #else
+            coordinator.dismissAllSupplementary(for: icao, dismissWindow: dismissWindow)
+            syncTrackedAirports()
+            #endif
         }
         .sheet(isPresented: bindShowingSettings) {
             SettingsView()
