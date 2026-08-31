@@ -135,7 +135,8 @@ enum PatternHourlyStats {
     static func snapshot(
         occupancySamples: [PatternOccupancySample],
         landingMarkers: [PatternLandingMarker],
-        now: Date
+        now: Date,
+        feedGapThreshold: TimeInterval
     ) -> PatternStatsSnapshot {
         let span = collectionSpan(
             occupancySamples: occupancySamples,
@@ -149,25 +150,29 @@ enum PatternHourlyStats {
                 samples: occupancySamples,
                 window: fiveMin,
                 span: span,
-                now: now
+                now: now,
+                feedGapThreshold: feedGapThreshold
             ),
             avgLast30Min: optionalAverage(
                 samples: occupancySamples,
                 window: thirtyMin,
                 span: span,
-                now: now
+                now: now,
+                feedGapThreshold: feedGapThreshold
             ),
             avgLastHour: optionalAverage(
                 samples: occupancySamples,
                 window: hourInterval,
                 span: span,
-                now: now
+                now: now,
+                feedGapThreshold: feedGapThreshold
             ),
             avgLast24Hours: optionalAverage(
                 samples: occupancySamples,
                 window: 24 * hourInterval,
                 span: span,
-                now: now
+                now: now,
+                feedGapThreshold: feedGapThreshold
             ),
             peakOccupancy: occupancySamples.isEmpty
                 ? nil
@@ -218,9 +223,16 @@ enum PatternHourlyStats {
         samples: [PatternOccupancySample],
         window: TimeInterval,
         span: TimeInterval,
-        now: Date
+        now: Date,
+        feedGapThreshold: TimeInterval
     ) -> Double? {
-        guard !samples.isEmpty, span >= window else { return nil }
+        guard span >= window else { return nil }
+        let windowed = samplesInWindow(samples, window: window, now: now)
+        guard !windowed.isEmpty else { return nil }
+        if let latest = windowed.map(\.time).max(),
+           now.timeIntervalSince(latest) > feedGapThreshold {
+            return nil
+        }
         return averageOccupancy(samples: samples, window: window, now: now)
     }
 

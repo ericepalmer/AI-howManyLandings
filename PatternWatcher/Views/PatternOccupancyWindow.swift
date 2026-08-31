@@ -1,36 +1,30 @@
 import Charts
 import SwiftUI
-#if os(macOS)
-import AppKit
-#endif
 
 /// Time series of how many aircraft are in the pattern (≤ 2,000 ft AGL, ≤ 5 NM).
 struct PatternOccupancyWindow: View {
     let airportICAO: String
     @Environment(TrackingEngine.self) private var engine
-    @State private var windowDuration: TimeInterval = PatternOccupancy.defaultChartWindow
-    @State private var magnificationAnchor: TimeInterval?
+
+    private let viewportDuration = PatternOccupancy.defaultChartWindow
+    private let fullHistoryWindow = PatternOccupancy.fullChartWindow
 
     private var chartEnd: Date { engine.simulationNow }
 
-    private var visibleStart: Date {
-        chartEnd.addingTimeInterval(-windowDuration)
+    private var fullXStart: Date {
+        chartEnd.addingTimeInterval(-fullHistoryWindow)
     }
 
     private var xDomain: ClosedRange<Date> {
-        visibleStart...chartEnd
+        fullXStart...chartEnd
     }
 
     private var historySamples: [PatternOccupancySample] {
         PatternOccupancy.recentSamples(
             engine.patternOccupancyHistory(for: airportICAO),
             now: chartEnd,
-            window: PatternOccupancy.fullChartWindow
+            window: fullHistoryWindow
         )
-    }
-
-    private var samples: [PatternOccupancySample] {
-        historySamples.filter { $0.time >= visibleStart }
     }
 
     private var landingMarkers: [PatternLandingMarker] {
@@ -41,6 +35,28 @@ struct PatternOccupancyWindow: View {
         markersInWindow(engine.patternTakeoffMarkers(for: airportICAO))
     }
 
+    private var feedGaps: [PatternFeedGap] {
+        var gaps = engine.patternFeedGaps(for: airportICAO)
+        let threshold = PatternOccupancy.feedGapThreshold(
+            pollInterval: AppSettings.pollIntervalSeconds
+        )
+        if let last = historySamples.last {
+            let elapsed = chartEnd.timeIntervalSince(last.time)
+            if elapsed > threshold {
+                gaps.append(PatternFeedGap(start: last.time, end: chartEnd))
+            }
+        }
+        return gaps
+    }
+
+    private var visibleGaps: [PatternFeedGap] {
+        PatternOccupancy.gapsInRange(feedGaps, from: fullXStart, to: chartEnd)
+    }
+
+    private var sampleSegments: [[PatternOccupancySample]] {
+        PatternOccupancy.contiguousSampleSegments(samples: historySamples, gaps: feedGaps)
+    }
+
     var body: some View {
         NavigationStack {
             Group {
@@ -48,10 +64,10 @@ struct PatternOccupancyWindow: View {
                     ContentUnavailableView(
                         "Collecting pattern data",
                         systemImage: "chart.xyaxis.line",
-                        description: Text("Counts update each ADS-B poll. Drag or scroll on the chart to zoom the time axis (5 min–4 hr).")
+                        description: Text("Counts update each ADS-B poll. Scroll horizontally to view up to 4 hours of history.")
                     )
                 } else {
-                    chart
+                    scrollableChart
                         .padding(16)
                 }
             }
@@ -62,24 +78,9 @@ struct PatternOccupancyWindow: View {
             #endif
             .toolbar {
                 ToolbarItem(placement: .automatic) {
-                    Text(windowRangeLabel)
+                    Text("30 min · scroll for 4 hr")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
-                }
-                ToolbarItemGroup(placement: .automatic) {
-                    Button {
-                        zoomIn()
-                    } label: {
-                        Label("Zoom in", systemImage: "plus.magnifyingglass")
-                    }
-                    .help("Show a shorter time range (down to 5 minutes)")
-
-                    Button {
-                        zoomOut()
-                    } label: {
-                        Label("Zoom out", systemImage: "minus.magnifyingglass")
-                    }
-                    .help("Show a longer time range (up to 4 hours)")
                 }
             }
         }
@@ -88,28 +89,68 @@ struct PatternOccupancyWindow: View {
         #endif
     }
 
-    private var chart: some View {
+    private var scrollableChart: some View {
+        GeometryReader { geometry in
+            let viewportWidth = max(geometry.size.width, 320)
+            let contentWidth = viewportWidth * CGFloat(fullHistoryWindow / viewportDuration)
+
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: true) {
+                    occupancyChart
+                        .frame(width: contentWidth, height: geometry.size.height)
+                        .id("occupancyChart")
+                }
+                .onAppear {
+                    scrollToLiveEdge(proxy)
+                }
+                #if os(macOS)
+                .overlay(alignment: .bottomTrailing) {
+                    Button("Now") {
+                        scrollToLiveEdge(proxy)
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption2)
+                    .padding(4)
+                }
+                #endif
+            }
+        }
+    }
+
+    private var occupancyChart: some View {
         Chart {
-            ForEach(samples) { sample in
-                AreaMark(
-                    x: .value("Time", sample.time),
-                    y: .value("Aircraft", sample.count)
+            ForEach(visibleGaps) { gap in
+                RectangleMark(
+                    xStart: .value("Time", gap.start),
+                    xEnd: .value("Time", gap.end),
+                    yStart: .value("Aircraft", 0),
+                    yEnd: .value("Aircraft", Double(yMax))
                 )
-                .foregroundStyle(Color.accentColor.opacity(0.22))
-                .interpolationMethod(.monotone)
+                .foregroundStyle(Color.secondary.opacity(0.16))
+            }
 
-                LineMark(
-                    x: .value("Time", sample.time),
-                    y: .value("Aircraft", sample.count)
-                )
-                .foregroundStyle(Color.accentColor)
-                .lineStyle(StrokeStyle(lineWidth: 2.25))
-                .interpolationMethod(.monotone)
+            ForEach(Array(sampleSegments.enumerated()), id: \.offset) { _, segment in
+                ForEach(segment) { sample in
+                    AreaMark(
+                        x: .value("Time", sample.time),
+                        y: .value("Aircraft", sample.count)
+                    )
+                    .foregroundStyle(Color.accentColor.opacity(0.22))
+                    .interpolationMethod(.monotone)
 
-                if sample.estimatedCount > 0 {
-                    RuleMark(x: .value("Time", sample.time))
-                        .foregroundStyle(Color.orange.opacity(0.08))
-                        .lineStyle(StrokeStyle(lineWidth: 2))
+                    LineMark(
+                        x: .value("Time", sample.time),
+                        y: .value("Aircraft", sample.count)
+                    )
+                    .foregroundStyle(Color.accentColor)
+                    .lineStyle(StrokeStyle(lineWidth: 2.25))
+                    .interpolationMethod(.monotone)
+
+                    if sample.estimatedCount > 0 {
+                        RuleMark(x: .value("Time", sample.time))
+                            .foregroundStyle(Color.orange.opacity(0.08))
+                            .lineStyle(StrokeStyle(lineWidth: 2))
+                    }
                 }
             }
 
@@ -170,71 +211,32 @@ struct PatternOccupancyWindow: View {
                 AxisValueLabel(format: .dateTime.hour().minute())
             }
         }
-        .gesture(
-            MagnificationGesture()
-                .onChanged { scale in
-                    if magnificationAnchor == nil {
-                        magnificationAnchor = windowDuration
-                    }
-                    let base = magnificationAnchor ?? windowDuration
-                    windowDuration = clampDuration(base / scale)
-                }
-                .onEnded { _ in
-                    magnificationAnchor = nil
-                }
-        )
-        #if os(macOS)
-        .overlay {
-            ChartScrollZoomOverlay { factor in
-                windowDuration = clampDuration(windowDuration * factor)
-            }
-        }
-        #endif
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var axisMarkCount: Int {
-        let minutes = windowDuration / 60
+        let minutes = viewportDuration / 60
         if minutes <= 10 { return 5 }
         if minutes <= 60 { return 6 }
         return 8
     }
 
-    private var windowRangeLabel: String {
-        let minutes = Int(windowDuration / 60)
-        if minutes < 60 {
-            return "\(minutes) min"
+    private func scrollToLiveEdge(_ proxy: ScrollViewProxy) {
+        DispatchQueue.main.async {
+            proxy.scrollTo("occupancyChart", anchor: .trailing)
         }
-        let hours = windowDuration / 3600
-        if hours.truncatingRemainder(dividingBy: 1) == 0 {
-            return "\(Int(hours)) hr"
-        }
-        return String(format: "%.1f hr", hours)
-    }
-
-    private func zoomIn() {
-        windowDuration = clampDuration(windowDuration * 0.72)
-    }
-
-    private func zoomOut() {
-        windowDuration = clampDuration(windowDuration * 1.39)
-    }
-
-    private func clampDuration(_ duration: TimeInterval) -> TimeInterval {
-        min(PatternOccupancy.fullChartWindow, max(PatternOccupancy.minChartWindow, duration))
     }
 
     private func markersInWindow(_ markers: [PatternLandingMarker]) -> [PatternLandingMarker] {
-        markers.filter { $0.time >= visibleStart }
+        markers.filter { $0.time >= fullXStart }
     }
 
     private func markersInWindow(_ markers: [PatternTakeoffMarker]) -> [PatternTakeoffMarker] {
-        markers.filter { $0.time >= visibleStart }
+        markers.filter { $0.time >= fullXStart }
     }
 
     private var eventBarDuration: TimeInterval {
-        guard samples.count >= 2 else { return 45 }
-        let sorted = samples.map(\.time).sorted()
+        guard historySamples.count >= 2 else { return 45 }
+        let sorted = historySamples.map(\.time).sorted()
         let deltas = zip(sorted, sorted.dropFirst()).map { $1.timeIntervalSince($0) }
         guard !deltas.isEmpty else { return 45 }
         let average = deltas.reduce(0, +) / Double(deltas.count)
@@ -245,7 +247,7 @@ struct PatternOccupancyWindow: View {
     private var eventLabelY: Double { 0.14 }
 
     private var yMax: Int {
-        let peak = samples.map(\.count).max() ?? 1
+        let peak = historySamples.map(\.count).max() ?? 1
         let eventBand = (landingMarkers.isEmpty && takeoffMarkers.isEmpty) ? 0 : 2
         return max(3, peak + 1, eventBand)
     }
@@ -264,32 +266,3 @@ private struct PatternEventAxisLabel: View {
             .rotationEffect(.degrees(-90), anchor: .bottom)
     }
 }
-
-#if os(macOS)
-/// Scroll wheel over the chart zooms the time axis.
-private struct ChartScrollZoomOverlay: NSViewRepresentable {
-    var onZoom: (Double) -> Void
-
-    func makeNSView(context: Context) -> ScrollZoomCaptureView {
-        let view = ScrollZoomCaptureView()
-        view.onZoom = onZoom
-        return view
-    }
-
-    func updateNSView(_ nsView: ScrollZoomCaptureView, context: Context) {
-        nsView.onZoom = onZoom
-    }
-}
-
-private final class ScrollZoomCaptureView: NSView {
-    var onZoom: ((Double) -> Void)?
-
-    override func scrollWheel(with event: NSEvent) {
-        let delta = event.scrollingDeltaY + event.scrollingDeltaX
-        guard abs(delta) > 0.01 else { return }
-        // Scroll up / left: zoom in (shorter window). Scroll down / right: zoom out.
-        let factor = delta > 0 ? 0.88 : 1.14
-        onZoom?(factor)
-    }
-}
-#endif

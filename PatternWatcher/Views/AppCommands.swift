@@ -19,6 +19,7 @@ struct FileCommands: Commands {
             Button("New Airport") {
                 coordinator.requestNewAirport()
             }
+            .keyboardShortcut("n", modifiers: .command)
         }
 
         #if os(macOS)

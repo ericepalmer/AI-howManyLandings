@@ -97,6 +97,9 @@ struct PatternWatcherApp: App {
         }
         .modelContainer(for: [StoredAirport.self])
         .defaultSize(width: 1240, height: 820)
+        .commands {
+            FileCommands(coordinator: coordinator, engine: engine)
+        }
 
         WindowGroup(id: "ads-feed", for: String.self) { $icao in
             if let icao {

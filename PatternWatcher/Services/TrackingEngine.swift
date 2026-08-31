@@ -36,6 +36,8 @@ final class TrackingEngine {
     var activeRunwayByAirport: [String: String] = [:]
     /// Pattern occupancy time series per airport ICAO.
     var patternOccupancyByAirport: [String: [PatternOccupancySample]] = [:]
+    /// Intervals without ADS-B polls per airport ICAO.
+    var patternFeedGapsByAirport: [String: [PatternFeedGap]] = [:]
     /// Landing markers for the pattern graph per airport ICAO.
     var patternLandingMarkersByAirport: [String: [PatternLandingMarker]] = [:]
     /// Takeoff markers for the pattern graph per airport ICAO.
@@ -109,6 +111,7 @@ final class TrackingEngine {
         liveAirportICAOs = liveAirportICAOs.intersection(tracked)
         activeRunwayByAirport = activeRunwayByAirport.filter { tracked.contains($0.key) }
         patternOccupancyByAirport = patternOccupancyByAirport.filter { tracked.contains($0.key) }
+        patternFeedGapsByAirport = patternFeedGapsByAirport.filter { tracked.contains($0.key) }
         patternLandingMarkersByAirport = patternLandingMarkersByAirport.filter { tracked.contains($0.key) }
         patternTakeoffMarkersByAirport = patternTakeoffMarkersByAirport.filter { tracked.contains($0.key) }
         patternPresenceLogByAirport = patternPresenceLogByAirport.filter { tracked.contains($0.key) }
@@ -627,6 +630,7 @@ final class TrackingEngine {
             aircraftByAirport[icao] = []
             activeRunwayByAirport.removeValue(forKey: icao)
             patternOccupancyByAirport[icao] = []
+            patternFeedGapsByAirport[icao] = []
             patternLandingMarkersByAirport[icao] = []
             patternTakeoffMarkersByAirport[icao] = []
             patternPresenceLogByAirport[icao] = []
@@ -638,6 +642,10 @@ final class TrackingEngine {
 
     func patternOccupancyHistory(for airportICAO: String) -> [PatternOccupancySample] {
         patternOccupancyByAirport[airportICAO] ?? []
+    }
+
+    func patternFeedGaps(for airportICAO: String) -> [PatternFeedGap] {
+        patternFeedGapsByAirport[airportICAO] ?? []
     }
 
     func patternLandingMarkers(for airportICAO: String) -> [PatternLandingMarker] {
@@ -656,7 +664,10 @@ final class TrackingEngine {
         PatternHourlyStats.snapshot(
             occupancySamples: patternOccupancyHistory(for: airportICAO),
             landingMarkers: patternLandingMarkers(for: airportICAO),
-            now: now
+            now: now,
+            feedGapThreshold: PatternOccupancy.feedGapThreshold(
+                pollInterval: AppSettings.pollIntervalSeconds
+            )
         )
     }
 
@@ -670,12 +681,14 @@ final class TrackingEngine {
     func clearPatternOccupancy(for airportICAO: String? = nil) {
         if let airportICAO {
             patternOccupancyByAirport[airportICAO] = []
+            patternFeedGapsByAirport[airportICAO] = []
             patternLandingMarkersByAirport[airportICAO] = []
             patternTakeoffMarkersByAirport[airportICAO] = []
             patternPresenceLogByAirport[airportICAO] = []
             patternHourlyStatsByAirport[airportICAO] = []
         } else {
             patternOccupancyByAirport = [:]
+            patternFeedGapsByAirport = [:]
             patternLandingMarkersByAirport = [:]
             patternTakeoffMarkersByAirport = [:]
             patternPresenceLogByAirport = [:]
@@ -687,6 +700,7 @@ final class TrackingEngine {
         let export = PatternLogExporter.makeExport(
             airportICAO: airportICAO,
             occupancySamples: patternOccupancyByAirport[airportICAO] ?? [],
+            feedGaps: patternFeedGapsByAirport[airportICAO] ?? [],
             landings: patternLandingMarkersByAirport[airportICAO] ?? [],
             takeoffs: patternTakeoffMarkersByAirport[airportICAO] ?? [],
             presencePolls: patternPresenceLogByAirport[airportICAO] ?? [],
@@ -722,6 +736,9 @@ final class TrackingEngine {
     ) {
         let sample = PatternOccupancy.sample(aircraft: aircraft, at: time)
         var series = patternOccupancyByAirport[airportICAO] ?? []
+        let gapThreshold = PatternOccupancy.feedGapThreshold(
+            pollInterval: AppSettings.pollIntervalSeconds
+        )
         if let last = series.last, abs(last.time.timeIntervalSince(time)) < 0.5 {
             let oldCount = last.count
             series[series.count - 1] = sample
@@ -733,6 +750,17 @@ final class TrackingEngine {
                 )
             }
         } else {
+            if let last = series.last {
+                let elapsed = time.timeIntervalSince(last.time)
+                if elapsed > gapThreshold {
+                    recordFeedGap(
+                        airportICAO: airportICAO,
+                        start: last.time,
+                        end: time,
+                        now: time
+                    )
+                }
+            }
             series.append(sample)
             patternHourlyStatsByAirport[airportICAO] = PatternHourlyStats.addOccupancySample(
                 buckets: patternHourlyStatsByAirport[airportICAO] ?? [],
@@ -746,6 +774,24 @@ final class TrackingEngine {
             series = Array(series.suffix(PatternOccupancy.maxSamples))
         }
         patternOccupancyByAirport[airportICAO] = series
+    }
+
+    private func recordFeedGap(
+        airportICAO: String,
+        start: Date,
+        end: Date,
+        now: Date
+    ) {
+        guard end.timeIntervalSince(start) > 1 else { return }
+        var gaps = patternFeedGapsByAirport[airportICAO] ?? []
+        if let last = gaps.last, last.end >= start {
+            gaps[gaps.count - 1].end = max(last.end, end)
+        } else {
+            gaps.append(PatternFeedGap(start: start, end: end))
+        }
+        let cutoff = now.addingTimeInterval(-PatternOccupancy.maxHistory)
+        gaps.removeAll { $0.end < cutoff }
+        patternFeedGapsByAirport[airportICAO] = gaps
     }
 
     private func recordLandingMarkers(

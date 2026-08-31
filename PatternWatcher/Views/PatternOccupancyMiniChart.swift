@@ -11,8 +11,33 @@ struct PatternOccupancyMiniChart: View {
         return PatternOccupancy.recentSamples(all, now: engine.simulationNow)
     }
 
+    private var chartEnd: Date { engine.simulationNow }
+
+    private var feedGaps: [PatternFeedGap] {
+        var gaps = engine.patternFeedGaps(for: airportICAO)
+        let threshold = PatternOccupancy.feedGapThreshold(
+            pollInterval: AppSettings.pollIntervalSeconds
+        )
+        let all = engine.patternOccupancyHistory(for: airportICAO)
+        if let last = all.last {
+            let elapsed = chartEnd.timeIntervalSince(last.time)
+            if elapsed > threshold {
+                gaps.append(PatternFeedGap(start: last.time, end: chartEnd))
+            }
+        }
+        return gaps
+    }
+
+    private var visibleGaps: [PatternFeedGap] {
+        PatternOccupancy.gapsInRange(feedGaps, from: visibleStart, to: chartEnd)
+    }
+
+    private var sampleSegments: [[PatternOccupancySample]] {
+        PatternOccupancy.contiguousSampleSegments(samples: samples, gaps: feedGaps)
+    }
+
     private var xDomain: ClosedRange<Date> {
-        let end = engine.simulationNow
+        let end = chartEnd
         let start = end.addingTimeInterval(-PatternOccupancy.miniChartWindow)
         return start...end
     }
@@ -42,21 +67,33 @@ struct PatternOccupancyMiniChart: View {
                     }
             } else {
                 Chart {
-                    ForEach(samples) { sample in
-                        AreaMark(
-                            x: .value("Time", sample.time),
-                            y: .value("Aircraft", sample.count)
+                    ForEach(visibleGaps) { gap in
+                        RectangleMark(
+                            xStart: .value("Time", gap.start),
+                            xEnd: .value("Time", gap.end),
+                            yStart: .value("Aircraft", 0),
+                            yEnd: .value("Aircraft", Double(yMax))
                         )
-                        .foregroundStyle(Color.accentColor.opacity(0.2))
-                        .interpolationMethod(.monotone)
+                        .foregroundStyle(Color.secondary.opacity(0.14))
+                    }
 
-                        LineMark(
-                            x: .value("Time", sample.time),
-                            y: .value("Aircraft", sample.count)
-                        )
-                        .foregroundStyle(Color.accentColor)
-                        .lineStyle(StrokeStyle(lineWidth: 1.5))
-                        .interpolationMethod(.monotone)
+                    ForEach(Array(sampleSegments.enumerated()), id: \.offset) { _, segment in
+                        ForEach(segment) { sample in
+                            AreaMark(
+                                x: .value("Time", sample.time),
+                                y: .value("Aircraft", sample.count)
+                            )
+                            .foregroundStyle(Color.accentColor.opacity(0.2))
+                            .interpolationMethod(.monotone)
+
+                            LineMark(
+                                x: .value("Time", sample.time),
+                                y: .value("Aircraft", sample.count)
+                            )
+                            .foregroundStyle(Color.accentColor)
+                            .lineStyle(StrokeStyle(lineWidth: 1.5))
+                            .interpolationMethod(.monotone)
+                        }
                     }
 
                     ForEach(landingMarkers) { marker in

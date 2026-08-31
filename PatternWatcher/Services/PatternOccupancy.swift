@@ -12,6 +12,13 @@ struct PatternOccupancySample: Identifiable, Sendable, Equatable, Codable {
     var estimatedCount: Int
 }
 
+/// Interval with no ADS-B polls (sleep, offline, failed fetches).
+struct PatternFeedGap: Identifiable, Sendable, Equatable, Codable {
+    var id: Date { start }
+    var start: Date
+    var end: Date
+}
+
 /// Landing tick on the pattern graph (confirmed touchdown or inferred from final/flare loss).
 struct PatternLandingMarker: Identifiable, Sendable, Equatable, Codable {
     var id = UUID()
@@ -64,6 +71,11 @@ enum PatternOccupancy {
     /// Mini sidebar chart: panel width spans this window.
     static let miniChartWindow: TimeInterval = 10 * 60
 
+    /// Elapsed time after the last poll before treating the gap as missing data.
+    static func feedGapThreshold(pollInterval: TimeInterval) -> TimeInterval {
+        max(30, pollInterval * 2.5)
+    }
+
     static func recentSamples(
         _ samples: [PatternOccupancySample],
         now: Date,
@@ -71,6 +83,42 @@ enum PatternOccupancy {
     ) -> [PatternOccupancySample] {
         let cutoff = now.addingTimeInterval(-window)
         return samples.filter { $0.time >= cutoff }
+    }
+
+    static func gapsInRange(_ gaps: [PatternFeedGap], from start: Date, to end: Date) -> [PatternFeedGap] {
+        gaps.filter { $0.end > start && $0.start < end }
+    }
+
+    /// Split samples so chart lines do not connect across feed gaps.
+    static func contiguousSampleSegments(
+        samples: [PatternOccupancySample],
+        gaps: [PatternFeedGap]
+    ) -> [[PatternOccupancySample]] {
+        guard !samples.isEmpty else { return [] }
+        var segments: [[PatternOccupancySample]] = []
+        var current: [PatternOccupancySample] = []
+        for sample in samples {
+            if let last = current.last, intervalOverlapsGap(from: last.time, to: sample.time, gaps: gaps) {
+                if !current.isEmpty {
+                    segments.append(current)
+                }
+                current = [sample]
+            } else {
+                current.append(sample)
+            }
+        }
+        if !current.isEmpty {
+            segments.append(current)
+        }
+        return segments
+    }
+
+    private static func intervalOverlapsGap(from start: Date, to end: Date, gaps: [PatternFeedGap]) -> Bool {
+        guard end > start else { return false }
+        for gap in gaps where gap.start < end && gap.end > start {
+            return true
+        }
+        return false
     }
 
     /// Typical remaining time in a piston pattern until landing, by last known leg.

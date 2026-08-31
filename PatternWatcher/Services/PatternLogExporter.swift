@@ -7,6 +7,7 @@ struct PatternLogExport: Codable, Sendable {
     var retentionDays: Int
     var description: String
     var occupancySamples: [PatternOccupancySample]
+    var feedGaps: [PatternFeedGap]
     var landings: [PatternLandingMarker]
     var takeoffs: [PatternTakeoffMarker]
     var presencePolls: [PatternPollPresenceRecord]
@@ -31,6 +32,7 @@ enum PatternLogExporter {
     static func makeExport(
         airportICAO: String,
         occupancySamples: [PatternOccupancySample],
+        feedGaps: [PatternFeedGap],
         landings: [PatternLandingMarker],
         takeoffs: [PatternTakeoffMarker],
         presencePolls: [PatternPollPresenceRecord],
@@ -42,6 +44,7 @@ enum PatternLogExporter {
             retentionDays: PatternOccupancy.maxRetentionDays,
             description: "Pattern occupancy, landings, departures, aircraft state, and hourly statistics. Retained up to \(PatternOccupancy.maxRetentionDays) days.",
             occupancySamples: occupancySamples,
+            feedGaps: feedGaps,
             landings: landings,
             takeoffs: takeoffs,
             presencePolls: presencePolls,

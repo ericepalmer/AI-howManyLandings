@@ -23,6 +23,8 @@ struct PatternStatsWindow: View {
     /// ~18 hours visible in the chart viewport (hourly ticks, zoomed in).
     private let visibleWindow: TimeInterval = 18 * PatternHourlyStats.hourInterval
     private let hourWidth: CGFloat = 44
+    private let statsOccupancyBarColor = Color.accentColor
+    private let statsLandingBarColor = Color(red: 0.52, green: 0.72, blue: 0.95)
 
     private var fullXDomain: ClosedRange<Date> {
         guard let first = hourlySeries.first?.hourStart else {
@@ -178,12 +180,13 @@ struct PatternStatsWindow: View {
         Chart {
             midnightRuleMarks()
             ForEach(hourlySeries) { bucket in
-                LineMark(
-                    x: .value("Hour", bucket.hourStart),
-                    y: .value("Aircraft", bucket.averageOccupancy)
-                )
-                .foregroundStyle(Color.accentColor)
-                .interpolationMethod(.monotone)
+                if bucket.occupancySampleCount > 0 {
+                    hourlyBarMark(
+                        hourStart: bucket.hourStart,
+                        value: bucket.averageOccupancy,
+                        color: statsOccupancyBarColor
+                    )
+                }
             }
         }
         .chartYAxisLabel("Aircraft")
@@ -197,11 +200,13 @@ struct PatternStatsWindow: View {
         Chart {
             midnightRuleMarks()
             ForEach(hourlySeries) { bucket in
-                BarMark(
-                    x: .value("Hour", bucket.hourStart),
-                    y: .value("Landings", bucket.landingCount)
-                )
-                .foregroundStyle(PatternEventChartColors.landing(confirmed: true))
+                if bucket.occupancySampleCount > 0 || bucket.landingCount > 0 {
+                    hourlyBarMark(
+                        hourStart: bucket.hourStart,
+                        value: Double(bucket.landingCount),
+                        color: statsLandingBarColor
+                    )
+                }
             }
         }
         .chartYAxisLabel("Landings")
@@ -209,6 +214,17 @@ struct PatternStatsWindow: View {
         .chartXAxis {
             hourlyDateAxisMarks()
         }
+    }
+
+    @ChartContentBuilder
+    private func hourlyBarMark(hourStart: Date, value: Double, color: Color) -> some ChartContent {
+        let hourEnd = hourStart.addingTimeInterval(PatternHourlyStats.hourInterval)
+        BarMark(
+            xStart: .value("Hour", hourStart),
+            xEnd: .value("Hour", hourEnd),
+            y: .value("Count", value)
+        )
+        .foregroundStyle(color)
     }
 
     @ChartContentBuilder
