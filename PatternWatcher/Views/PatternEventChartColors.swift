@@ -9,8 +9,13 @@ enum PatternEventChartColors {
     /// Rounded ends on landing/takeoff event bars in Swift Charts.
     static let eventBarCornerRadius: CGFloat = 4
     static let eventLabelFontSize: CGFloat = 9
+    /// Monospace character width at `eventLabelFontSize`.
+    static var eventLabelCharWidthPt: CGFloat { eventLabelFontSize * 0.625 }
     /// Nudge vertical callsign labels up/right (~1.25 monospace character widths).
-    static var eventLabelNudgePt: CGFloat { eventLabelFontSize * 0.625 * 1.25 }
+    static var eventLabelNudgePt: CGFloat { eventLabelCharWidthPt * 1.25 }
+    static var eventLabelQuarterCharPt: CGFloat { eventLabelCharWidthPt * 0.25 }
+    static let eventLabelExtraLeftPt: CGFloat = 1
+    static var eventLabelExtraUpPt: CGFloat { eventLabelCharWidthPt * 2 }
 
     static func landing(confirmed: Bool) -> Color {
         confirmed ? landingConfirmed : landingInferred

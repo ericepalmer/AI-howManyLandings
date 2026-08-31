@@ -667,6 +667,17 @@ enum PatternClassifier {
 
     // MARK: - Phase tests
 
+    /// Short final / flare sit on the approach side of the threshold, not climb-out past it.
+    private static func isOnShortFinalApproachSide(
+        along: Double,
+        agl: Double?,
+        maxPastThresholdNM: Double = 0.08
+    ) -> Bool {
+        if along <= 0 { return true }
+        guard let agl, agl < 300 else { return along <= 0.20 }
+        return along <= maxPastThresholdNM
+    }
+
     private static func isFlare(
         chosen: RunwayApproach,
         point: CLLocationCoordinate2D,
@@ -678,7 +689,8 @@ enum PatternClassifier {
         guard let heading, Geo.isAbout(heading, chosen.headingDeg, tolerance: 30) else { return false }
         let frame = chosen.frame(at: point)
         guard abs(frame.crossRight) < 0.12 else { return false }
-        guard frame.along > -0.40, frame.along < 0.30 else { return false }
+        guard frame.along > -0.40,
+              isOnShortFinalApproachSide(along: frame.along, agl: agl) else { return false }
         if let speed, speed > 120 { return false }
         return true
     }
@@ -698,7 +710,9 @@ enum PatternClassifier {
         guard let heading, Geo.isAbout(heading, chosen.headingDeg, tolerance: alignTol * stretch) else { return false }
         let frame = chosen.frame(at: point)
         guard abs(frame.crossRight) < 0.22 * stretch else { return false }
-        guard frame.along > longFinalNearAlongNM / stretch, frame.along < 0.20 * stretch else { return false }
+        guard frame.along > longFinalNearAlongNM / stretch,
+              isOnShortFinalApproachSide(along: frame.along, agl: agl, maxPastThresholdNM: 0.08 * stretch),
+              frame.along < 0.20 * stretch else { return false }
         guard approachSpeedOk(speed: speed, slowing: slowing, category: category) else { return false }
         let lowEnough = descending || agl < 600
         return lowEnough
@@ -1263,8 +1277,11 @@ enum PatternClassifier {
                 )
         case .flare:
             guard let chosen else { return false }
+            let frame = chosen.frame(at: point)
             return isFlare(chosen: chosen, point: point, heading: heading, agl: agl, speed: speed)
-                || ((agl ?? 0) < 160 && chosen.distanceToThresholdNM(from: point) < 0.55)
+                || ((agl ?? 0) < 160
+                    && chosen.distanceToThresholdNM(from: point) < 0.55
+                    && isOnShortFinalApproachSide(along: frame.along, agl: agl))
         case .leaving:
             if isApproachingField(distanceNM: distanceNM, previousDistanceNM: previousDistanceNM) {
                 return false

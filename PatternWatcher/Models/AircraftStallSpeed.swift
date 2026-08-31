@@ -1,13 +1,13 @@
 import Foundation
 
 /// Published Vso (stall in landing configuration, max gross) in knots.
-/// Used for kinematic landing: GS below 1.3×Vso (criterion 2) or 1.2×Vso (criterion 3, Final/Flare).
+/// Used for kinematic landing: GS below 1.3×Vso (criterion 2, Final/Flare, AGL < 0).
 ///
 /// Sources: FAA TCDS / POH airspeed limitations (flaps full, power off). ADS-B ground
 /// speed is compared directly — close enough at pattern speeds.
 enum AircraftStallSpeed {
     static let approachSpeedFactor = 1.3
-    /// Criterion 3: GS below 1.2×Vso (Final, Flare, or Approach; AGL < 100 ft).
+    /// Hold inferred ground state while ADS-B still shows airborne after criterion 2.
     static let nearGroundSpeedFactor = 1.2
 
     // MARK: - Type lookup (ICAO designator → Vso kt)
@@ -123,7 +123,7 @@ enum AircraftStallSpeed {
         approachSpeedFactor * vsoKnots(typeCode: typeCode, category: category)
     }
 
-    /// 1.2×Vso — criterion 3 (AGL < 100 ft, Final/Flare).
+    /// 1.2×Vso — hold inferred ground while ADS-B still shows airborne after criterion 2.
     static func nearGroundApproachSpeedKnots(typeCode: String?, category: AircraftCategory) -> Double {
         nearGroundSpeedFactor * vsoKnots(typeCode: typeCode, category: category)
     }
@@ -145,7 +145,6 @@ enum AircraftStallSpeed {
         var lines = [
             "Aircraft stall speeds (Vso kt, landing config, max gross)",
             "Criterion 2: Final/Flare, AGL < 0, GS < 1.3×Vso",
-            "Criterion 3: Final, Flare, or Approach; AGL < 100 ft; GS < 1.2×Vso",
             "",
             "— Common types (ICAO designator → Vso → 1.3×Vso) —",
         ]

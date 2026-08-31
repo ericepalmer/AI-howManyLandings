@@ -19,11 +19,11 @@ struct PatternFeedGap: Identifiable, Sendable, Equatable, Codable {
     var end: Date
 }
 
-/// Landing tick on the pattern graph (confirmed touchdown or inferred from final/flare loss).
+/// Landing tick on the pattern graph (confirmed ADS-B/kinematic or deferred from Final/Flare).
 struct PatternLandingMarker: Identifiable, Sendable, Equatable, Codable {
     var id = UUID()
     var time: Date
-    /// ADS-B on-ground edge; false = kinematic or ETA-inferred.
+    /// ADS-B on-ground or AGL<0 kinematic; false = deferred (Departure/Upwind or 60s lost).
     var confirmed: Bool
     /// Callsign or tail shown on the chart.
     var label: String
@@ -165,6 +165,7 @@ extension LandingDetector.TrackedAircraft {
     /// Airborne pattern legs (≤ 5 NM, ≤ 2,000 ft AGL). Excludes Ground, Leaving,
     /// and Maneuvering. Lost contacts stay counted until the phase-based landing ETA.
     func countsTowardPatternOccupancy(at now: Date) -> Bool {
+        if hasPendingLanding { return inPattern || distanceNM <= Geo.patternRadiusNM }
         if snapshot.onGround { return false }
         if flightState?.isGround == true { return false }
         if patternPhase == .ground || patternPhase == .leaving || patternPhase == .maneuvering {

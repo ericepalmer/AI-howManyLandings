@@ -260,6 +260,7 @@ private struct PatternEventAxisLabel: View {
     let text: String
 
     private var nudge: CGFloat { PatternEventChartColors.eventLabelNudgePt }
+    private var quarterChar: CGFloat { PatternEventChartColors.eventLabelQuarterCharPt }
 
     var body: some View {
         Text(text)
@@ -268,6 +269,9 @@ private struct PatternEventAxisLabel: View {
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
             .rotationEffect(.degrees(-90), anchor: .bottom)
-            .offset(x: nudge, y: -nudge)
+            .offset(
+                x: nudge - quarterChar - PatternEventChartColors.eventLabelExtraLeftPt,
+                y: -nudge - quarterChar - PatternEventChartColors.eventLabelExtraUpPt
+            )
     }
 }
