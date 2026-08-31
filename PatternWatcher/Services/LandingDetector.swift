@@ -332,7 +332,7 @@ struct LandingDetector: Sendable {
                 memory: &memory
             )
             if !memory.landingMarkerRecorded {
-                applyLowAndSlowLanding(
+                processPendingLanding(
                     snapshot: snapshot,
                     agl: agl,
                     airport: airport,
@@ -340,7 +340,7 @@ struct LandingDetector: Sendable {
                 )
             }
             if !memory.landingMarkerRecorded {
-                processPendingLanding(
+                applyLowAndSlowLanding(
                     snapshot: snapshot,
                     agl: agl,
                     airport: airport,
@@ -566,7 +566,7 @@ struct LandingDetector: Sendable {
     private static let nearGroundAGLFt = 100.0
 
     /// Criterion 2: below field (AGL < 0) on approach, GS below 1.3×Vso.
-    /// Fires on Final/Flare or while a pending approach is open (AGL < 0 forces `.ground` in the classifier).
+    /// Fires on Final/Flare, pending approach, or negative AGL near the runway (rollout join).
     @discardableResult
     private mutating func applyLowAndSlowLanding(
         snapshot: AircraftSnapshot,
@@ -574,8 +574,17 @@ struct LandingDetector: Sendable {
         airport: Airport,
         memory: inout AircraftMemory
     ) -> Bool {
-        guard isInPendingApproach(memory: memory) else { return false }
-        if memory.pendingLandingSince == nil {
+        guard isInKinematicLandingContext(
+            memory: memory,
+            agl: agl,
+            airport: airport,
+            coordinate: snapshot.coordinate
+        ) else { return false }
+        if memory.pendingLandingSince == nil,
+           memory.pattern.phase != .final,
+           memory.pattern.phase != .flare {
+            guard let agl, agl < 0 else { return false }
+        } else if memory.pendingLandingSince == nil {
             guard hasTrackedApproachDescent(memory: memory) else { return false }
         }
         guard !kinematicLandingBlocked(memory: memory) else { return false }
@@ -592,16 +601,26 @@ struct LandingDetector: Sendable {
             snapshot: snapshot,
             airport: airport,
             memory: &memory,
+            landingTime: memory.pendingLandingBestTime ?? snapshot.timestamp,
             confirmed: true,
             inferGroundState: true
         )
         return true
     }
 
-    private func isInPendingApproach(memory: AircraftMemory) -> Bool {
-        memory.pendingLandingSince != nil
-            || memory.pattern.phase == .final
-            || memory.pattern.phase == .flare
+    private func isInKinematicLandingContext(
+        memory: AircraftMemory,
+        agl: Double?,
+        airport: Airport,
+        coordinate: CLLocationCoordinate2D
+    ) -> Bool {
+        if memory.pendingLandingSince != nil { return true }
+        if memory.pattern.phase == .final || memory.pattern.phase == .flare { return true }
+        if let agl, agl < 0,
+           isCloseEnoughForSurfaceOps(coordinate: coordinate, airport: airport) {
+            return true
+        }
+        return false
     }
 
     private mutating func updatePendingLandingBestAGL(
@@ -662,8 +681,16 @@ struct LandingDetector: Sendable {
                 )
             }
         case .ground:
-            // Negative AGL is classified as Ground before climb-out; keep the pending approach.
-            if memory.pendingLandingSince != nil {
+            // Negative AGL is classified as Ground before climb-out; keep or open a pending approach.
+            if memory.pendingLandingSince == nil,
+               let agl, agl < 0,
+               isCloseEnoughForSurfaceOps(coordinate: snapshot.coordinate, airport: airport),
+               !isColdStartClimbOut(memory: memory) {
+                memory.pendingLandingSince = snapshot.timestamp
+                memory.pendingLandingPhase = .flare
+                memory.pendingLandingBestTime = snapshot.timestamp
+                memory.pendingLandingBestAGL = agl
+            } else if memory.pendingLandingSince != nil {
                 updatePendingLandingBestAGL(
                     agl: agl,
                     timestamp: snapshot.timestamp,
@@ -729,6 +756,23 @@ struct LandingDetector: Sendable {
         return false
     }
 
+    /// First contact already on the runway (missed the airborne rollout in ADS-B).
+    private func shouldInferJoinedTaxiLanding(
+        snapshot: AircraftSnapshot,
+        agl: Double?,
+        airport: Airport,
+        memory: AircraftMemory
+    ) -> Bool {
+        guard !memory.landingMarkerRecorded else { return false }
+        guard isCloseEnoughForSurfaceOps(coordinate: snapshot.coordinate, airport: airport) else {
+            return false
+        }
+        let speed = snapshot.groundSpeedKt ?? 0
+        guard speed >= 8, speed <= 45 else { return false }
+        guard let agl, agl <= 50 else { return false }
+        return true
+    }
+
     /// Landing = false→true, takeoff = true→false. First sample sets baseline only.
     private mutating func applyOnGroundEdge(
         snapshot: AircraftSnapshot,
@@ -740,7 +784,26 @@ struct LandingDetector: Sendable {
 
         guard let previous = memory.lastOnGround else {
             memory.lastOnGround = onGround
-            memory.flightState = onGround ? .initialGround : .tookOff
+            if onGround {
+                memory.flightState = .initialGround
+                if shouldInferJoinedTaxiLanding(
+                    snapshot: snapshot,
+                    agl: agl,
+                    airport: airport,
+                    memory: memory
+                ) {
+                    applyLandingState(
+                        snapshot: snapshot,
+                        airport: airport,
+                        memory: &memory,
+                        confirmed: true,
+                        inferGroundState: false,
+                        setGroundPhase: true
+                    )
+                }
+            } else {
+                memory.flightState = .tookOff
+            }
             return
         }
 
@@ -768,17 +831,21 @@ struct LandingDetector: Sendable {
             return
         }
 
-        memory.flightState = onGround ? .landed : .tookOff
-
         guard isCloseEnoughForSurfaceOps(coordinate: snapshot.coordinate, airport: airport) else {
+            memory.lastOnGround = onGround
             return
         }
 
+        memory.lastOnGround = onGround
+        memory.flightState = onGround ? .landed : .tookOff
+
         if onGround {
+            let landingTime = memory.pendingLandingBestTime ?? memory.pendingLandingSince
             applyLandingState(
                 snapshot: snapshot,
                 airport: airport,
                 memory: &memory,
+                landingTime: landingTime,
                 confirmed: true,
                 inferGroundState: false,
                 setGroundPhase: true
