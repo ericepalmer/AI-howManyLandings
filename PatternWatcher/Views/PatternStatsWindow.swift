@@ -32,6 +32,9 @@ struct PatternStatsWindow: View {
     private let hourlyBarWidthFraction = 0.9
     private let statsOccupancyBarColor = Color.accentColor
     private let statsLandingBarColor = Color(red: 0.52, green: 0.72, blue: 0.95)
+    private let yAxisColumnWidth: CGFloat = 44
+    private let occupancyPlotHeight: CGFloat = 168
+    private let landingsPlotHeight: CGFloat = 148
 
     private var fullXDomain: ClosedRange<Date> {
         guard let first = hourlySeries.first?.hourStart else {
@@ -150,44 +153,68 @@ struct PatternStatsWindow: View {
 
     private var hourlyHistoryCharts: some View {
         ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: true) {
+            HStack(alignment: .top, spacing: 0) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Hourly average aircraft in pattern")
                         .font(.subheadline.weight(.semibold))
+                        .opacity(0)
+                        .accessibilityHidden(true)
 
-                    hourlyChart(kind: .occupancy)
-                        .frame(width: chartContentWidth, height: 168)
+                    hourlyYAxisChart(kind: .occupancy)
+                        .frame(width: yAxisColumnWidth, height: occupancyPlotHeight)
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Hourly landings")
-                            .font(.subheadline.weight(.semibold))
-                        if let peak = peakLandingsPerHour {
-                            Text("Peak \(peak) per hour")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(.top, 4)
+                    landingsHeaderBlock
+                        .opacity(0)
+                        .accessibilityHidden(true)
 
-                    hourlyChart(kind: .landings)
-                        .frame(width: chartContentWidth, height: 148)
+                    hourlyYAxisChart(kind: .landings)
+                        .frame(width: yAxisColumnWidth, height: landingsPlotHeight)
                 }
-                .id("hourlyCharts")
+                .frame(width: yAxisColumnWidth)
+
+                ScrollView(.horizontal, showsIndicators: true) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Hourly average aircraft in pattern")
+                            .font(.subheadline.weight(.semibold))
+
+                        hourlyPlotChart(kind: .occupancy)
+                            .frame(width: chartContentWidth, height: occupancyPlotHeight)
+
+                        landingsHeaderBlock
+
+                        hourlyPlotChart(kind: .landings)
+                            .frame(width: chartContentWidth, height: landingsPlotHeight)
+                    }
+                    .id("hourlyCharts")
+                }
+                #if os(macOS)
+                .overlay(alignment: .bottomTrailing) {
+                    Button("Now") {
+                        scrollToLiveEdge(proxy)
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption2)
+                    .padding(4)
+                }
+                #endif
             }
             .onAppear {
                 scrollToLiveEdge(proxy)
             }
-            #if os(macOS)
-            .overlay(alignment: .bottomTrailing) {
-                Button("Now") {
-                    scrollToLiveEdge(proxy)
-                }
-                .buttonStyle(.borderless)
-                .font(.caption2)
-                .padding(4)
-            }
-            #endif
         }
+    }
+
+    private var landingsHeaderBlock: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Hourly landings")
+                .font(.subheadline.weight(.semibold))
+            if let peak = peakLandingsPerHour {
+                Text("Peak \(peak) per hour")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.top, 4)
     }
 
     private enum HourlyChartKind {
@@ -195,7 +222,32 @@ struct PatternStatsWindow: View {
         case landings
     }
 
-    private func hourlyChart(kind: HourlyChartKind) -> some View {
+  /// Fixed column: Y scale only (stays visible while the plot scrolls).
+    private func hourlyYAxisChart(kind: HourlyChartKind) -> some View {
+        Chart {
+            RuleMark(y: .value("Count", 0))
+                .opacity(0)
+        }
+        .chartYScale(domain: yDomain(for: kind))
+        .chartXScale(domain: fullXDomain)
+        .chartYAxisLabel(kind == .occupancy ? "Aircraft" : "Landings")
+        .chartYAxis {
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 5)) { value in
+                AxisValueLabel {
+                    if kind == .occupancy, let amount = value.as(Double.self) {
+                        Text(formatAverage(amount))
+                            .font(.caption2.monospacedDigit())
+                    } else if let count = value.as(Int.self) {
+                        Text("\(count)")
+                            .font(.caption2.monospacedDigit())
+                    }
+                }
+            }
+        }
+        .chartXAxis(.hidden)
+    }
+
+    private func hourlyPlotChart(kind: HourlyChartKind) -> some View {
         Chart {
             midnightRuleMarks()
             ForEach(hourlySeries) { bucket in
@@ -221,15 +273,31 @@ struct PatternStatsWindow: View {
                 }
             }
         }
-        .chartYScale(domain: .automatic(includesZero: true))
-        .chartYAxisLabel(kind == .occupancy ? "Aircraft" : "Landings")
+        .chartYScale(domain: yDomain(for: kind))
         .chartXScale(domain: fullXDomain)
+        .chartYAxis(.hidden)
         .chartXAxis {
             if kind == .occupancy {
                 hourlyGridAxisMarks()
             } else {
                 hourlyDateAxisMarks()
             }
+        }
+    }
+
+    private func yDomain(for kind: HourlyChartKind) -> ClosedRange<Double> {
+        switch kind {
+        case .occupancy:
+            let peak = hourlySeries
+                .filter { $0.occupancySampleCount > 0 }
+                .map(\.averageOccupancy)
+                .max() ?? 0
+            let top = max(1, ceil(peak))
+            return 0...top
+        case .landings:
+            let peak = hourlySeries.map(\.landingCount).max() ?? 0
+            let top = max(1, peak)
+            return 0...Double(top)
         }
     }
 

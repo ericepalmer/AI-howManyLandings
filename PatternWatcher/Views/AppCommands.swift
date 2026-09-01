@@ -1,8 +1,7 @@
 import SwiftUI
 
-/// File menu commands (attach to airport scene).
-struct FileCommands: Commands {
-    @FocusedValue(\.airportWindowICAO) private var focusedAirportICAO
+/// App menu commands (attach once per primary scene).
+struct AppMenuCommands: Commands {
     @Bindable var coordinator: OpenAirportCoordinator
     var engine: TrackingEngine
 
@@ -24,11 +23,16 @@ struct FileCommands: Commands {
 
         #if os(macOS)
         CommandGroup(after: .newItem) {
-            Button(saveLogTitle) {
-                PatternLogSaveService.save(
-                    coordinator: coordinator,
-                    engine: engine,
-                    focusedAirportICAO: focusedAirportICAO
+            Button("Save Log…") {
+                PatternLogSaveService.save(engine: engine)
+            }
+        }
+
+        CommandGroup(after: .windowList) {
+            ForEach(coordinator.openICAOs, id: \.self) { icao in
+                Toggle(
+                    miniPlotTitle(icao: icao),
+                    isOn: coordinator.miniPlotBinding(for: icao)
                 )
             }
         }
@@ -60,18 +64,11 @@ struct FileCommands: Commands {
     }
 
     #if os(macOS)
-    private var saveLogICAO: String? {
-        if let focused = focusedAirportICAO, coordinator.openICAOs.contains(focused) {
-            return focused
+    private func miniPlotTitle(icao: String) -> String {
+        if coordinator.openICAOs.count > 1 {
+            return "Show mini-plot (\(icao))"
         }
-        return coordinator.activeSaveLogICAO
-    }
-
-    private var saveLogTitle: String {
-        if let icao = saveLogICAO {
-            return "Save Log for \(icao)…"
-        }
-        return "Save Log…"
+        return "Show mini-plot"
     }
     #endif
 }

@@ -24,7 +24,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.disallowTabbingOnAllWindows()
-        WindowMenuController.installObservers()
         AirportWindowCloseObserver.install()
         NotificationCenter.default.addObserver(
             forName: NSWindow.didBecomeKeyNotification,
@@ -33,18 +32,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { _ in
             Task { @MainActor in
                 AppDelegate.disallowTabbingOnAllWindows()
-                AppDelegate.coordinator?.syncActiveAirportFromKeyWindow()
-                FileMenuController.syncSaveLogTitle(icao: AppDelegate.coordinator?.activeSaveLogICAO)
-                WindowMenuController.shared.scheduleSyncMenu()
+            }
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                AppDelegate.snapshotOpenWindowsForNextLaunch()
             }
         }
 
         Task { @MainActor in
             removeUnwantedMenus()
-            AppDelegate.coordinator?.syncActiveAirportFromKeyWindow()
-            FileMenuController.syncSaveLogTitle(icao: AppDelegate.coordinator?.activeSaveLogICAO)
-            WindowMenuController.shared.scheduleSyncMenu()
         }
+    }
+
+    @MainActor
+    static func snapshotOpenWindowsForNextLaunch() {
+        isTerminating = true
+        coordinator?.snapshotRestoreList()
+    }
+
+    @MainActor
+    static func reconcileOpenAirportsAndTracking() {
+        guard let coordinator, let engine else { return }
+        coordinator.reconcileOpenAirportsAndTracking(
+            engine: engine,
+            airportForICAO: { icao in
+                AirportCatalog.shared.airport(code: icao)
+            }
+        )
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        Self.snapshotOpenWindowsForNextLaunch()
+        return .terminateNow
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        Self.snapshotOpenWindowsForNextLaunch()
     }
 
     @MainActor
@@ -52,17 +80,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for window in NSApp.windows {
             window.tabbingMode = .disallowed
         }
-    }
-
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        Self.isTerminating = true
-        Self.coordinator?.snapshotRestoreList()
-        return .terminateNow
-    }
-
-    func applicationWillTerminate(_ notification: Notification) {
-        Self.isTerminating = true
-        Self.coordinator?.snapshotRestoreList()
     }
 
     private func removeUnwantedMenus() {
@@ -101,8 +118,7 @@ struct PatternWatcherApp: App {
         .modelContainer(for: [StoredAirport.self])
         .defaultSize(width: 480, height: 360)
         .commands {
-            WindowStabilizerCommands()
-            FileCommands(coordinator: coordinator, engine: engine)
+            AppMenuCommands(coordinator: coordinator, engine: engine)
         }
 
         WindowGroup(id: "airport", for: String.self) { $icao in
@@ -114,10 +130,6 @@ struct PatternWatcherApp: App {
         }
         .modelContainer(for: [StoredAirport.self])
         .defaultSize(width: 1240, height: 820)
-        .commands {
-            WindowStabilizerCommands()
-            FileCommands(coordinator: coordinator, engine: engine)
-        }
 
         WindowGroup(id: "ads-feed", for: String.self) { $icao in
             if let icao {
@@ -129,7 +141,6 @@ struct PatternWatcherApp: App {
         .environment(coordinator)
         #if os(macOS)
         .defaultSize(width: 920, height: 560)
-        .commands { WindowStabilizerCommands() }
         #endif
 
         WindowGroup(id: "pattern-occupancy", for: String.self) { $icao in
@@ -142,7 +153,6 @@ struct PatternWatcherApp: App {
         .environment(coordinator)
         #if os(macOS)
         .defaultSize(width: 720, height: 460)
-        .commands { WindowStabilizerCommands() }
         #endif
 
         WindowGroup(id: "pattern-stats", for: String.self) { $icao in
@@ -155,7 +165,6 @@ struct PatternWatcherApp: App {
         .environment(coordinator)
         #if os(macOS)
         .defaultSize(width: 720, height: 560)
-        .commands { WindowStabilizerCommands() }
         #endif
 
         WindowGroup(id: "metar", for: String.self) { $station in
@@ -168,7 +177,6 @@ struct PatternWatcherApp: App {
         .environment(coordinator)
         #if os(macOS)
         .defaultSize(width: 480, height: 420)
-        .commands { WindowStabilizerCommands() }
         #endif
 
         #if os(macOS)
@@ -177,7 +185,6 @@ struct PatternWatcherApp: App {
                 .environment(engine)
         }
         .defaultSize(width: 460, height: 520)
-        .commands { WindowStabilizerCommands() }
         #endif
     }
 }

@@ -13,9 +13,13 @@ import Foundation
 ///   (touch-and-go / missed ADS-B touchdown; landing + inferred takeoff), or ADS-B is lost
 ///   for 60+ seconds on approach. Deferred landings use the lowest AGL time during the
 ///   approach and are marked unconfirmed.
-/// - Takeoff: `onGround` true → false while close to the field / runway
+/// - Takeoff (1, confirmed): `onGround` true → false while close to the field / runway
+/// - Takeoff (2, inferred): touch-and-go climb after a logged landing without a ground edge
+/// - Takeoff (3, inferred): late ADS-B pickup — first sample airborne in the active-runway
+///   departure corridor below 500 ft AGL with climb-out speed (1.1–2.0×Vso, category cap)
 ///
-/// First sighting establishes baseline only (no event).
+/// First sighting on the surface establishes baseline only (no landing).
+/// Other first sightings are baseline airborne unless takeoff (3) fires.
 /// Edges far from this airport (e.g. a neighbor inside the coverage ring) are ignored.
 /// Live plane trails keep only the last 5 minutes of points (trimmed each poll).
 struct LandingDetector: Sendable {
@@ -587,6 +591,13 @@ struct LandingDetector: Sendable {
     /// Along-runway slack before the threshold (approach path) and through rollout.
     private static let runwayApproachAlongMarginNM = 0.10
     private static let runwayRolloutAlongMarginNM = 0.08
+    /// First ADS-B sample must be below this AGL to infer a late-pickup takeoff.
+    private static let latePickupMaxAGLFt = 500.0
+    private static let latePickupMinAlongFraction = 0.08
+    private static let latePickupHeadingToleranceDeg = 40.0
+    private static let latePickupAllowedPhases: Set<PatternPhase> = [
+        .departure, .upwind, .maneuvering,
+    ]
 
     /// Criterion 2: below field (AGL < 0) on approach, GS below 1.3×Vso.
     /// Fires on Final/Flare, pending approach, or negative AGL near the runway (rollout join).
@@ -917,20 +928,17 @@ struct LandingDetector: Sendable {
     }
 
     /// First contact already on the runway (missed the airborne rollout in ADS-B).
-    private func shouldInferJoinedTaxiLanding(
+    /// First ADS-B sample: on the surface → baseline ground state only (never a landing).
+    private func isFirstContactOnSurface(
         snapshot: AircraftSnapshot,
-        agl: Double?,
-        airport: Airport,
-        memory: AircraftMemory
+        agl: Double?
     ) -> Bool {
-        guard !memory.landingMarkerRecorded else { return false }
-        guard isCloseEnoughForSurfaceOps(coordinate: snapshot.coordinate, airport: airport) else {
-            return false
-        }
-        let speed = snapshot.groundSpeedKt ?? 0
-        guard speed >= 8, speed <= 45 else { return false }
-        guard let agl, agl <= 50 else { return false }
-        return true
+        if snapshot.onGround { return true }
+        return Geo.isSurfaceOps(
+            onGround: false,
+            altitudeAGLFt: agl,
+            groundSpeedKt: snapshot.groundSpeedKt
+        )
     }
 
     /// Landing = false→true, takeoff = true→false. First sample sets baseline only.
@@ -944,25 +952,16 @@ struct LandingDetector: Sendable {
 
         guard let previous = memory.lastOnGround else {
             memory.lastOnGround = onGround
-            if onGround {
+            if isFirstContactOnSurface(snapshot: snapshot, agl: agl) {
                 memory.flightState = .initialGround
-                if shouldInferJoinedTaxiLanding(
+            } else {
+                memory.flightState = .tookOff
+                applyLatePickupTakeoffIfEligible(
                     snapshot: snapshot,
                     agl: agl,
                     airport: airport,
-                    memory: memory
-                ) {
-                    applyLandingState(
-                        snapshot: snapshot,
-                        airport: airport,
-                        memory: &memory,
-                        confirmed: true,
-                        inferGroundState: false,
-                        setGroundPhase: true
-                    )
-                }
-            } else {
-                memory.flightState = .tookOff
+                    memory: &memory
+                )
             }
             return
         }
@@ -1195,6 +1194,96 @@ struct LandingDetector: Sendable {
                 )
             )
         }
+        if let direction = landingRunwayDirection(
+            coordinate: snapshot.coordinate,
+            heading: snapshot.trackDeg,
+            airport: airport
+        ) {
+            activeRunwayDirection = direction
+        }
+    }
+
+    /// First contact already airborne in the departure corridor (late ADS-B pickup).
+    private mutating func applyLatePickupTakeoffIfEligible(
+        snapshot: AircraftSnapshot,
+        agl: Double?,
+        airport: Airport,
+        memory: inout AircraftMemory
+    ) {
+        guard !memory.takeoffMarkerRecorded else { return }
+        guard !snapshot.onGround else { return }
+        guard memory.flightState?.isGround != true else { return }
+        guard Self.latePickupAllowedPhases.contains(memory.pattern.phase) else { return }
+
+        guard let aglFt = agl, aglFt >= 0, aglFt < Self.latePickupMaxAGLFt else { return }
+        guard isLatePickupTakeoffSpeed(snapshot: snapshot) else { return }
+        guard isInLatePickupDepartureCorridor(
+            coordinate: snapshot.coordinate,
+            heading: snapshot.trackDeg,
+            airport: airport
+        ) else { return }
+
+        memory.pattern.phase = .departure
+        recordInferredTakeoffMarker(
+            snapshot: snapshot,
+            airport: airport,
+            memory: &memory,
+            time: snapshot.timestamp
+        )
+    }
+
+    private func isLatePickupTakeoffSpeed(snapshot: AircraftSnapshot) -> Bool {
+        let speed = snapshot.groundSpeedKt ?? 0
+        let minKt = AircraftStallSpeed.latePickupTakeoffMinSpeedKnots(for: snapshot)
+        let maxKt = AircraftStallSpeed.latePickupTakeoffMaxSpeedKnots(for: snapshot)
+        return speed >= minKt && speed <= maxKt
+    }
+
+    /// Active-runway departure corridor: midfield through past the departure end, near centerline.
+    private func isInLatePickupDepartureCorridor(
+        coordinate: CLLocationCoordinate2D,
+        heading: Double?,
+        airport: Airport
+    ) -> Bool {
+        guard let heading else { return false }
+
+        if airport.runways.isEmpty {
+            return Geo.distanceNM(coordinate, airport.coordinate) <= config.airportFallbackNM
+        }
+
+        let approaches = airport.runways.flatMap(\.approaches)
+        let candidates: [RunwayApproach]
+        if let active = activeRunwayDirection {
+            let matched = approaches.filter { approachMatchesPreferred($0, preferred: active) }
+            candidates = matched.isEmpty ? approaches : matched
+        } else {
+            candidates = approaches
+        }
+
+        let crossLimit = Self.runwayHalfWidthNM + Self.adsbPositionErrorMarginNM
+        for approach in candidates {
+            guard Geo.isAbout(
+                heading,
+                approach.headingDeg,
+                tolerance: Self.latePickupHeadingToleranceDeg
+            ) else { continue }
+
+            let frame = approach.frame(at: coordinate)
+            guard abs(frame.crossRight) <= crossLimit else { continue }
+            // Departure side (not on approach/final past the threshold).
+            guard frame.along > -Self.adsbPositionErrorMarginNM else { continue }
+
+            let alongMin = max(
+                Self.latePickupMinAlongFraction * approach.lengthNM,
+                Self.adsbPositionErrorMarginNM
+            )
+            let alongMax = approach.lengthNM
+                + Self.runwayRolloutAlongMarginNM
+                + Self.adsbPositionErrorMarginNM
+            guard frame.along >= alongMin, frame.along <= alongMax else { continue }
+            return true
+        }
+        return false
     }
 
     private func labelForMarker(snapshot: AircraftSnapshot) -> String {

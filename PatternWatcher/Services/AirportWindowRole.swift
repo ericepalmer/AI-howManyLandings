@@ -16,17 +16,18 @@ enum AirportWindowRole {
 
     func icao(from identifier: NSUserInterfaceItemIdentifier) -> String? {
         let raw = identifier.rawValue
-        if raw.hasPrefix("pw-airport-") {
+        switch self {
+        case .main:
+            guard raw.hasPrefix("pw-airport-") else { return nil }
             return String(raw.dropFirst("pw-airport-".count))
-        }
-        if raw.hasPrefix("pw-aux-") {
+        case .auxiliary:
+            guard raw.hasPrefix("pw-aux-") else { return nil }
             return String(raw.dropFirst("pw-aux-".count))
         }
-        return nil
     }
 
-    /// Resolve ICAO from our identifier or the standard airport window title.
-    static func icaoFromMainWindow(_ window: NSWindow) -> String? {
+    /// ICAO for a main airport window (`pw-airport-*` or `KPAO — …` title).
+    static func icaoFromMainAirportWindow(_ window: NSWindow) -> String? {
         if let id = window.identifier, let icao = main.icao(from: id) {
             return icao
         }
@@ -34,6 +35,16 @@ enum AirportWindowRole {
         let icao = window.title[..<dashRange.lowerBound]
         guard icao.count == 4 else { return nil }
         return String(icao)
+    }
+
+    /// ICAO for any airport-tied window (main or supplementary).
+    static func icaoFromAirportWindow(_ window: NSWindow) -> String? {
+        if let id = window.identifier {
+            if let icao = main.icao(from: id) ?? auxiliary.icao(from: id) {
+                return icao
+            }
+        }
+        return icaoFromMainAirportWindow(window)
     }
 }
 #endif

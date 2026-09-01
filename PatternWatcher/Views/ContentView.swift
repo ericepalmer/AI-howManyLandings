@@ -36,7 +36,6 @@ struct BootstrapView: View {
             }
             #endif
         }
-        .background(WindowMenuBridge())
         .sheet(isPresented: bindShowingNewAirportPicker) {
             AddAirportSheet(
                 openICAOs: Set(coordinator.openICAOs),
@@ -47,36 +46,51 @@ struct BootstrapView: View {
 
     private var bindShowingNewAirportPicker: Binding<Bool> {
         Binding(
-            get: { coordinator.showingNewAirportPicker },
-            set: { coordinator.showingNewAirportPicker = $0 }
+            get: {
+                coordinator.showingNewAirportPicker
+                    && coordinator.newAirportPickerHostICAO == nil
+            },
+            set: { newValue in
+                if !newValue { coordinator.dismissNewAirportPicker() }
+            }
         )
     }
 
     private func restoreAirportWindowsIfNeeded() {
         guard !didRestoreWindows else { return }
         didRestoreWindows = true
+        #if os(macOS)
+        if coordinator.hasOpenMainAirportWindows {
+            coordinator.finishLaunchRestore()
+            reconcileWindowsAndTracking()
+            dismissWindow(id: "bootstrap")
+            return
+        }
+        #endif
         let toOpen = AppSettings.openAirportICAOs
         guard !toOpen.isEmpty else { return }
         for icao in toOpen {
             openWindow(id: "airport", value: icao)
         }
         coordinator.finishLaunchRestore()
-        syncTrackedAirports()
+        reconcileWindowsAndTracking()
         dismissWindow(id: "bootstrap")
     }
 
     private func openAirport(_ airport: Airport) {
+        coordinator.dismissNewAirportPicker()
         coordinator.registerOpen(airport.icao)
-        syncTrackedAirports()
+        reconcileWindowsAndTracking()
         openWindow(id: "airport", value: airport.icao)
         dismissWindow(id: "bootstrap")
     }
 
+    private func reconcileWindowsAndTracking() {
+        coordinator.reconcileOpenAirportsAndTracking(engine: engine, airportForICAO: airportForICAO)
+    }
+
     private func syncTrackedAirports() {
-        let airports = coordinator.openICAOs.compactMap { icao in
-            airportForICAO(icao)
-        }
-        engine.updateTrackedAirports(airports)
+        reconcileWindowsAndTracking()
     }
 
     private func airportForICAO(_ icao: String) -> Airport? {
@@ -138,8 +152,14 @@ struct AirportWindowView: View {
         }
         .focusedValue(\.airportWindowICAO, icao)
         #if os(macOS)
-        .background(WindowMenuBridge())
-        .background(AirportWindowCloseTracker(icao: icao, role: .main, coordinator: coordinator))
+        .background(
+            AirportWindowCloseTracker(
+                icao: icao,
+                role: .main,
+                coordinator: coordinator,
+                onMainWindowWillClose: handleMainAirportWindowClose
+            )
+        )
         #endif
         .onAppear {
             engine.attach(modelContext: modelContext)
@@ -162,27 +182,26 @@ struct AirportWindowView: View {
             #else
             coordinator.registerOpen(icao)
             #endif
-            syncTrackedAirports()
-        }
-        .onDisappear {
+            reconcileWindowsAndTracking()
             #if os(macOS)
-            guard !AppDelegate.isTerminating else { return }
-            coordinator.dismissAllSupplementary(for: icao, dismissWindow: dismissWindow)
-            syncTrackedAirports()
-            if coordinator.openICAOs.isEmpty {
-                openWindow(id: "bootstrap")
+            if coordinator.hasOpenMainAirportWindows {
+                dismissWindow(id: "bootstrap")
             }
-            #else
-            coordinator.dismissAllSupplementary(for: icao, dismissWindow: dismissWindow)
-            syncTrackedAirports()
             #endif
         }
+        #if os(iOS)
+        .onDisappear {
+            coordinator.closeAirportWindow(icao: icao)
+            coordinator.dismissAllSupplementary(for: icao, dismissWindow: dismissWindow)
+            syncTrackedAirports()
+        }
+        #endif
+        #if os(iOS)
         .sheet(isPresented: bindShowingSettings) {
             SettingsView()
-            #if os(iOS)
                 .presentationDetents([.medium, .large])
-            #endif
         }
+        #endif
         .sheet(isPresented: bindShowingNewAirportPicker) {
             AddAirportSheet(
                 openICAOs: Set(coordinator.openICAOs),
@@ -191,6 +210,32 @@ struct AirportWindowView: View {
         }
     }
 
+    private var bindShowingNewAirportPicker: Binding<Bool> {
+        Binding(
+            get: {
+                coordinator.showingNewAirportPicker
+                    && coordinator.newAirportPickerHostICAO == icao
+            },
+            set: { newValue in
+                if !newValue { coordinator.dismissNewAirportPicker() }
+            }
+        )
+    }
+
+    #if os(iOS)
+    private var bindShowingSettings: Binding<Bool> {
+        Binding(
+            get: {
+                coordinator.showingSettings
+                    && coordinator.settingsHostICAO == icao
+            },
+            set: { newValue in
+                if !newValue { coordinator.dismissSettings() }
+            }
+        )
+    }
+    #endif
+
     private var windowTitle: String {
         if let airport {
             return "\(airport.icao) — \(airport.displayName)"
@@ -198,33 +243,39 @@ struct AirportWindowView: View {
         return icao
     }
 
-    private var bindShowingSettings: Binding<Bool> {
-        Binding(
-            get: { engine.showingSettings },
-            set: { engine.showingSettings = $0 }
-        )
-    }
-
-    private var bindShowingNewAirportPicker: Binding<Bool> {
-        Binding(
-            get: { coordinator.showingNewAirportPicker },
-            set: { coordinator.showingNewAirportPicker = $0 }
-        )
-    }
-
     private func syncTrackedAirports() {
-        let airports = coordinator.openICAOs.compactMap { openICAO in
-            storedAirports.first(where: { $0.icao == openICAO })?.asAirport
-                ?? AirportCatalog.shared.airport(code: openICAO)
-        }
-        engine.updateTrackedAirports(airports)
+        reconcileWindowsAndTracking()
+    }
+
+    private func reconcileWindowsAndTracking() {
+        coordinator.reconcileOpenAirportsAndTracking(engine: engine, airportForICAO: { icao in
+            storedAirports.first(where: { $0.icao == icao })?.asAirport
+                ?? AirportCatalog.shared.airport(code: icao)
+        })
     }
 
     private func openAnotherAirport(_ airport: Airport) {
+        coordinator.dismissNewAirportPicker()
         coordinator.registerOpen(airport.icao)
-        syncTrackedAirports()
+        reconcileWindowsAndTracking()
         openWindow(id: "airport", value: airport.icao)
     }
+
+    #if os(macOS)
+    private func handleMainAirportWindowClose() {
+        coordinator.dismissAllSupplementary(for: icao, dismissWindow: dismissWindow)
+        coordinator.noteMainAirportWillClose(icao: icao)
+        DispatchQueue.main.async {
+            reconcileWindowsAndTracking()
+            if coordinator.hasOpenMainAirportWindows {
+                dismissWindow(id: "bootstrap")
+            } else {
+                coordinator.dismissNewAirportPicker()
+                openWindow(id: "bootstrap")
+            }
+        }
+    }
+    #endif
 }
 
 private struct AirportDetailView: View {
@@ -233,6 +284,9 @@ private struct AirportDetailView: View {
     @Environment(OpenAirportCoordinator.self) private var coordinator
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
+    #if os(macOS)
+    @Environment(\.openSettings) private var openSettings
+    #endif
     @State private var trackDump: TrackDumpPayload?
     @State private var showRightPanel = true
 
@@ -371,7 +425,11 @@ private struct AirportDetailView: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    engine.showingSettings = true
+                    #if os(macOS)
+                    openSettings()
+                    #else
+                    coordinator.requestSettings(hostICAO: airport.icao)
+                    #endif
                 } label: {
                     Label("Settings", systemImage: "gearshape")
                 }

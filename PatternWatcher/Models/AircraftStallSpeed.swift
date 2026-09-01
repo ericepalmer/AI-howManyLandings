@@ -10,6 +10,11 @@ enum AircraftStallSpeed {
     static let approachSpeedFactor = 1.3
     /// Hold inferred ground state while ADS-B still shows airborne after criterion 2.
     static let nearGroundSpeedFactor = 1.2
+    /// Late pickup takeoff: minimum GS (floor 35 kt).
+    static let latePickupMinSpeedFactor = 1.1
+    /// Late pickup takeoff: maximum GS before category absolute cap.
+    static let latePickupMaxSpeedFactor = 2.0
+    static let latePickupAbsoluteMinKnots = 35.0
 
     // MARK: - Type lookup (ICAO designator → Vso kt)
 
@@ -96,6 +101,21 @@ enum AircraftStallSpeed {
 
     static let defaultVsoKnots = 55.0
 
+    /// Absolute GS ceiling for late-pickup inferred takeoff (above 2.0×Vso when lower).
+    static let categoryLatePickupMaxKnots: [AircraftCategory: Double] = [
+        .ultralight: 90,
+        .light: 120,
+        .small: 140,
+        .large: 180,
+        .heavy: 220,
+        .highVortexLarge: 220,
+        .highPerformance: 200,
+        .glider: 90,
+        .lighterThanAir: 60,
+        .rotorcraft: 100,
+        .unknown: 160,
+    ]
+
     // MARK: - API
 
     static func normalizedTypeCode(_ raw: String?) -> String? {
@@ -139,6 +159,21 @@ enum AircraftStallSpeed {
 
     static func nearGroundApproachSpeedKnots(for snapshot: AircraftSnapshot) -> Double {
         nearGroundApproachSpeedKnots(typeCode: snapshot.typeCode, category: snapshot.category)
+    }
+
+    /// 1.1×Vso (min 35 kt) — late ADS-B pickup takeoff floor.
+    static func latePickupTakeoffMinSpeedKnots(for snapshot: AircraftSnapshot) -> Double {
+        max(
+            latePickupAbsoluteMinKnots,
+            latePickupMinSpeedFactor * vsoKnots(for: snapshot)
+        )
+    }
+
+    /// 2.0×Vso capped by category — late ADS-B pickup takeoff ceiling.
+    static func latePickupTakeoffMaxSpeedKnots(for snapshot: AircraftSnapshot) -> Double {
+        let vsoCap = latePickupMaxSpeedFactor * vsoKnots(for: snapshot)
+        let categoryCap = categoryLatePickupMaxKnots[snapshot.category] ?? 160
+        return min(vsoCap, categoryCap)
     }
 
     /// Human-readable summary of the stall-speed table for settings / debug.

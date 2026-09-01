@@ -4,43 +4,40 @@ import Foundation
 
 @MainActor
 enum PatternLogSaveService {
-    static func save(
-        coordinator: OpenAirportCoordinator?,
-        engine: TrackingEngine?,
-        focusedAirportICAO: String? = nil
-    ) {
-        guard let coordinator, let engine else {
+    static func save(engine: TrackingEngine?) {
+        guard let engine else {
             presentMessage(
                 "Save Log unavailable",
-                informative: "Open an airport window and try again."
+                informative: "The tracking engine is not available."
             )
             return
         }
 
-        let icao: String?
-        if let focusedAirportICAO, coordinator.openICAOs.contains(focusedAirportICAO) {
-            icao = focusedAirportICAO
-        } else {
-            icao = coordinator.activeSaveLogICAO
+        let options = engine.trackedAirports.map { airport in
+            PatternLogSavePanel.AirportOption(
+                icao: airport.icao,
+                label: "\(airport.icao) — \(airport.displayName)"
+            )
         }
 
-        guard let icao else {
+        guard !options.isEmpty else {
             presentMessage(
-                "No airport selected",
-                informative: "Open an airport window before saving a pattern log."
+                "No airfields to save",
+                informative: "Open an airport window so pattern data is being tracked, then try again."
             )
             return
         }
 
-        guard let url = PatternLogSavePanel.saveLog(airportICAO: icao) else { return }
+        guard let selection = PatternLogSavePanel.saveLog(airportOptions: options) else { return }
 
+        let url = selection.url
         let accessed = url.startAccessingSecurityScopedResource()
         defer {
             if accessed { url.stopAccessingSecurityScopedResource() }
         }
 
         do {
-            try engine.savePatternLog(for: icao, to: url)
+            try engine.savePatternLog(for: selection.icao, to: url)
         } catch {
             NSLog("Failed to save pattern log: \(error.localizedDescription)")
             presentError(error)
