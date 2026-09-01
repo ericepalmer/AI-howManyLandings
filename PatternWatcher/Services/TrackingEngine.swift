@@ -20,7 +20,6 @@ final class TrackingEngine {
     var lastAircraftCountByAirport: [String: Int] = [:]
     /// Airports that have received at least one successful live snapshot this session.
     var liveAirportICAOs: Set<String> = []
-    var showingSettings = false
     var sessionStartedAt: Date?
     /// Pattern-tracker card selection per airport (Mode-S hex); drives map trail emphasis.
     var selectedTrackerByAirport: [String: String] = [:]

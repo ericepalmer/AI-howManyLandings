@@ -37,6 +37,13 @@ final class OpenAirportCoordinator {
     /// False during launch until saved airports are opened (blocks stray restored windows).
     private(set) var launchRestoreComplete = false
     var showingNewAirportPicker = false
+    /// Which airport window presents the new-airport sheet (`nil` = bootstrap welcome).
+    var newAirportPickerHostICAO: String?
+    #if os(iOS)
+    var showingSettings = false
+    /// Which airport window presents the settings sheet.
+    var settingsHostICAO: String?
+    #endif
     /// Last airport or supplementary window that was active (save-log target).
     var saveLogTargetICAO: String?
     private var showMiniPatternPlotByICAO: [String: Bool] = [:]
@@ -50,7 +57,6 @@ final class OpenAirportCoordinator {
     func finishLaunchRestore() {
         launchRestoreComplete = true
         persistOpenICAOs()
-        refreshWindowMenu()
     }
 
     func registerOpen(_ icao: String) {
@@ -63,7 +69,6 @@ final class OpenAirportCoordinator {
         if launchRestoreComplete {
             persistOpenICAOs()
         }
-        refreshWindowMenu()
     }
 
     /// User closed an airport window (not app quit).
@@ -79,7 +84,6 @@ final class OpenAirportCoordinator {
             saveLogTargetICAO = openICAOs.last
         }
         persistOpenICAOs()
-        refreshWindowMenu()
         #if os(macOS)
         syncActiveAirportFromKeyWindow()
         FileMenuController.syncSaveLogTitle(icao: activeSaveLogICAO)
@@ -100,7 +104,6 @@ final class OpenAirportCoordinator {
         #else
         persistOpenICAOs()
         #endif
-        refreshWindowMenu()
     }
 
     /// Airport for File → Save Log (key window, must still be open).
@@ -120,22 +123,73 @@ final class OpenAirportCoordinator {
 
     /// Persist open airports for next launch (on quit).
     func snapshotRestoreList() {
+        reconcileOpenMainWindows()
         persistOpenICAOs()
     }
 
     #if os(macOS)
     func syncActiveAirportFromKeyWindow() {
-        guard let window = NSApp.keyWindow, let id = window.identifier else { return }
-        let icao = AirportWindowRole.main.icao(from: id)
-            ?? AirportWindowRole.auxiliary.icao(from: id)
-        guard let icao, openICAOs.contains(icao) else { return }
-        setSaveLogTarget(icao)
+        guard let window = NSApp.keyWindow else { return }
+        if let id = window.identifier {
+            let icao = AirportWindowRole.main.icao(from: id)
+                ?? AirportWindowRole.auxiliary.icao(from: id)
+            if let icao, openICAOs.contains(icao) {
+                setSaveLogTarget(icao)
+                return
+            }
+        }
+        if let icao = AirportWindowRole.icaoFromMainWindow(window),
+           openICAOs.contains(icao) {
+            setSaveLogTarget(icao)
+        }
+    }
+
+    /// Open main airport windows in menu order (identifier `pw-airport-*`).
+    func mainWindowICAOsOrdered() -> [String] {
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for window in NSApp.windows {
+            guard let id = window.identifier,
+                  let icao = AirportWindowRole.main.icao(from: id)
+            else { continue }
+            guard !seen.contains(icao) else { continue }
+            seen.insert(icao)
+            ordered.append(icao)
+        }
+        return ordered
+    }
+
+    func reconcileOpenMainWindows() {
+        openICAOs = mainWindowICAOsOrdered()
     }
     #endif
 
     func requestNewAirport() {
+        #if os(macOS)
+        syncActiveAirportFromKeyWindow()
+        newAirportPickerHostICAO = activeSaveLogICAO
+        #else
+        newAirportPickerHostICAO = openICAOs.last
+        #endif
         showingNewAirportPicker = true
     }
+
+    func dismissNewAirportPicker() {
+        showingNewAirportPicker = false
+        newAirportPickerHostICAO = nil
+    }
+
+    #if os(iOS)
+    func requestSettings(hostICAO: String) {
+        settingsHostICAO = hostICAO
+        showingSettings = true
+    }
+
+    func dismissSettings() {
+        showingSettings = false
+        settingsHostICAO = nil
+    }
+    #endif
 
     func setSaveLogTarget(_ icao: String) {
         saveLogTargetICAO = icao
@@ -151,7 +205,6 @@ final class OpenAirportCoordinator {
     func setShowMiniPatternPlot(_ show: Bool, for icao: String) {
         guard showMiniPatternPlot(for: icao) != show else { return }
         showMiniPatternPlotByICAO[icao] = show
-        refreshWindowMenu()
     }
 
     func miniPlotBinding(for icao: String) -> Binding<Bool> {
@@ -227,11 +280,6 @@ final class OpenAirportCoordinator {
         )
     }
 
-    #if os(macOS)
-    private func refreshWindowMenu() {
-        WindowMenuController.shared.scheduleSyncMenu()
-    }
-    #endif
 }
 
 extension View {
@@ -256,7 +304,6 @@ private struct SupplementaryWindowLifecycleModifier: ViewModifier {
                 coordinator.registerSupplementaryOpen(icao: icao, kind: kind)
                 #if os(macOS)
                 AppDelegate.coordinator = coordinator
-                WindowMenuController.shared.scheduleSyncMenu()
                 #endif
             }
             #if os(macOS)

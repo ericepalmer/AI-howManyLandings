@@ -17,6 +17,9 @@ enum PatternLogSaveService {
             return
         }
 
+        coordinator.syncActiveAirportFromKeyWindow()
+        FileMenuController.syncSaveLogTitle(icao: coordinator.activeSaveLogICAO)
+
         let icao: String?
         if let focusedAirportICAO, coordinator.openICAOs.contains(focusedAirportICAO) {
             icao = focusedAirportICAO
