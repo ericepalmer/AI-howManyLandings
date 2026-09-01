@@ -32,16 +32,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { _ in
             Task { @MainActor in
                 AppDelegate.disallowTabbingOnAllWindows()
-                AppDelegate.coordinator?.syncActiveAirportFromKeyWindow()
-                FileMenuController.syncSaveLogTitle(icao: AppDelegate.coordinator?.activeSaveLogICAO)
+            }
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                AppDelegate.snapshotOpenWindowsForNextLaunch()
             }
         }
 
         Task { @MainActor in
             removeUnwantedMenus()
-            AppDelegate.coordinator?.syncActiveAirportFromKeyWindow()
-            FileMenuController.syncSaveLogTitle(icao: AppDelegate.coordinator?.activeSaveLogICAO)
         }
+    }
+
+    @MainActor
+    static func snapshotOpenWindowsForNextLaunch() {
+        isTerminating = true
+        coordinator?.snapshotRestoreList()
+    }
+
+    @MainActor
+    static func reconcileOpenAirportsAndTracking() {
+        guard let coordinator, let engine else { return }
+        coordinator.reconcileOpenAirportsAndTracking(
+            engine: engine,
+            airportForICAO: { icao in
+                AirportCatalog.shared.airport(code: icao)
+            }
+        )
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        Self.snapshotOpenWindowsForNextLaunch()
+        return .terminateNow
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        Self.snapshotOpenWindowsForNextLaunch()
     }
 
     @MainActor
@@ -49,17 +80,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for window in NSApp.windows {
             window.tabbingMode = .disallowed
         }
-    }
-
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        Self.isTerminating = true
-        Self.coordinator?.snapshotRestoreList()
-        return .terminateNow
-    }
-
-    func applicationWillTerminate(_ notification: Notification) {
-        Self.isTerminating = true
-        Self.coordinator?.snapshotRestoreList()
     }
 
     private func removeUnwantedMenus() {

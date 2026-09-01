@@ -917,20 +917,17 @@ struct LandingDetector: Sendable {
     }
 
     /// First contact already on the runway (missed the airborne rollout in ADS-B).
-    private func shouldInferJoinedTaxiLanding(
+    /// First ADS-B sample: on the surface → baseline ground state only (never a landing).
+    private func isFirstContactOnSurface(
         snapshot: AircraftSnapshot,
-        agl: Double?,
-        airport: Airport,
-        memory: AircraftMemory
+        agl: Double?
     ) -> Bool {
-        guard !memory.landingMarkerRecorded else { return false }
-        guard isCloseEnoughForSurfaceOps(coordinate: snapshot.coordinate, airport: airport) else {
-            return false
-        }
-        let speed = snapshot.groundSpeedKt ?? 0
-        guard speed >= 8, speed <= 45 else { return false }
-        guard let agl, agl <= 50 else { return false }
-        return true
+        if snapshot.onGround { return true }
+        return Geo.isSurfaceOps(
+            onGround: false,
+            altitudeAGLFt: agl,
+            groundSpeedKt: snapshot.groundSpeedKt
+        )
     }
 
     /// Landing = false→true, takeoff = true→false. First sample sets baseline only.
@@ -944,23 +941,8 @@ struct LandingDetector: Sendable {
 
         guard let previous = memory.lastOnGround else {
             memory.lastOnGround = onGround
-            if onGround {
+            if isFirstContactOnSurface(snapshot: snapshot, agl: agl) {
                 memory.flightState = .initialGround
-                if shouldInferJoinedTaxiLanding(
-                    snapshot: snapshot,
-                    agl: agl,
-                    airport: airport,
-                    memory: memory
-                ) {
-                    applyLandingState(
-                        snapshot: snapshot,
-                        airport: airport,
-                        memory: &memory,
-                        confirmed: true,
-                        inferGroundState: false,
-                        setGroundPhase: true
-                    )
-                }
             } else {
                 memory.flightState = .tookOff
             }

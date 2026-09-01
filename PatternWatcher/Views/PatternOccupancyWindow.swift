@@ -76,13 +76,6 @@ struct PatternOccupancyWindow: View {
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
-            .toolbar {
-                ToolbarItem(placement: .automatic) {
-                    Text("20 min · scroll for 4 hr")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-            }
         }
         #if os(macOS)
         .frame(minWidth: 640, minHeight: 420)
@@ -143,7 +136,9 @@ struct PatternOccupancyWindow: View {
                 }
             }
         }
-        .chartXAxis(.hidden)
+        .chartXAxis {
+            quarterHourTopAxisSpacerMarks()
+        }
     }
 
     private var occupancyPlotChart: some View {
@@ -153,7 +148,36 @@ struct PatternOccupancyWindow: View {
         .chartYScale(domain: 0...yMax)
         .chartXScale(domain: xDomain)
         .chartYAxis(.hidden)
-        .chartXAxis(.hidden)
+        .chartXAxis {
+            quarterHourTopAxisMarks()
+        }
+    }
+
+    /// Invisible top axis band so the Y scale column aligns with the scrollable plot.
+    @AxisContentBuilder
+    private func quarterHourTopAxisSpacerMarks() -> some AxisContent {
+        AxisMarks(position: .top, values: quarterHourTicks) { _ in
+            AxisValueLabel(centered: true, anchor: .bottom) {
+                Text("12:00 PM")
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .hidden()
+            }
+        }
+    }
+
+    @AxisContentBuilder
+    private func quarterHourTopAxisMarks() -> some AxisContent {
+        AxisMarks(position: .top, values: quarterHourTicks) { value in
+            AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                .foregroundStyle(Color.secondary.opacity(0.22))
+            AxisValueLabel(centered: true, anchor: .bottom) {
+                if let date = value.as(Date.self) {
+                    Text(date, format: .dateTime.hour(.defaultDigits(amPM: .abbreviated)).minute(.twoDigits))
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(.primary.opacity(0.9))
+                }
+            }
+        }
     }
 
     @ChartContentBuilder
@@ -164,24 +188,7 @@ struct PatternOccupancyWindow: View {
                 .lineStyle(StrokeStyle(lineWidth: 0.5))
         }
 
-        ForEach(quarterHourTicks, id: \.self) { tick in
-                RuleMark(x: .value("Time", tick))
-                    .foregroundStyle(Color.secondary.opacity(0.22))
-                    .lineStyle(StrokeStyle(lineWidth: 0.5))
-
-                PointMark(
-                    x: .value("Time", tick),
-                    y: .value("Aircraft", Double(yMax))
-                )
-                .symbolSize(0)
-                .annotation(position: .top, alignment: .center) {
-                    Text(tick, format: .dateTime.hour().minute())
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            ForEach(visibleGaps) { gap in
+        ForEach(visibleGaps) { gap in
                 RectangleMark(
                     xStart: .value("Time", gap.start),
                     xEnd: .value("Time", gap.end),

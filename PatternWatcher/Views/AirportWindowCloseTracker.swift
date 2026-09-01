@@ -7,9 +7,11 @@ struct AirportWindowCloseTracker: NSViewRepresentable {
     let icao: String
     var role: AirportWindowRole = .main
     let coordinator: OpenAirportCoordinator
+    /// Main-window cleanup (supplementary dismiss, bootstrap). Not used for auxiliary windows.
+    var onMainWindowWillClose: (() -> Void)?
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(icao: icao, role: role, coordinator: coordinator)
+        Coordinator(icao: icao, role: role, coordinator: coordinator, onMainWindowWillClose: onMainWindowWillClose)
     }
 
     func makeNSView(context: Context) -> NSView {
@@ -23,6 +25,7 @@ struct AirportWindowCloseTracker: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.icao = icao
         context.coordinator.role = role
+        context.coordinator.onMainWindowWillClose = onMainWindowWillClose
         DispatchQueue.main.async {
             context.coordinator.attach(to: nsView)
         }
@@ -32,13 +35,20 @@ struct AirportWindowCloseTracker: NSViewRepresentable {
         var icao: String
         var role: AirportWindowRole
         let coordinator: OpenAirportCoordinator
+        var onMainWindowWillClose: (() -> Void)?
         private weak var attachedWindow: NSWindow?
         private weak var previousDelegate: NSWindowDelegate?
 
-        init(icao: String, role: AirportWindowRole, coordinator: OpenAirportCoordinator) {
+        init(
+            icao: String,
+            role: AirportWindowRole,
+            coordinator: OpenAirportCoordinator,
+            onMainWindowWillClose: (() -> Void)?
+        ) {
             self.icao = icao
             self.role = role
             self.coordinator = coordinator
+            self.onMainWindowWillClose = onMainWindowWillClose
         }
 
         func attach(to view: NSView) {
@@ -48,24 +58,17 @@ struct AirportWindowCloseTracker: NSViewRepresentable {
             previousDelegate = window.delegate
             window.delegate = self
             window.identifier = role.windowIdentifier(icao: icao)
-            if window.isKeyWindow {
-                Task { @MainActor in
-                    coordinator.setSaveLogTarget(icao)
-                }
-            }
-        }
-
-        func windowDidBecomeKey(_ notification: Notification) {
-            Task { @MainActor in
-                coordinator.setSaveLogTarget(icao)
-            }
         }
 
         func windowWillClose(_ notification: Notification) {
             guard !AppDelegate.isTerminating else { return }
             guard role == .main else { return }
             DispatchQueue.main.async {
-                self.coordinator.closeAirportWindow(icao: self.icao)
+                if let onMainWindowWillClose = self.onMainWindowWillClose {
+                    onMainWindowWillClose()
+                } else {
+                    self.coordinator.closeAirportWindow(icao: self.icao)
+                }
             }
         }
 

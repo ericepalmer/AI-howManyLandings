@@ -1,7 +1,7 @@
 #if os(macOS)
 import AppKit
 
-/// Persists airport closes via NSWindow.willClose (SwiftUI often bypasses window delegates).
+/// Defers airport/tracking reconciliation when a main window closes (SwiftUI delegates can be unreliable).
 enum AirportWindowCloseObserver {
     static func install() {
         NotificationCenter.default.addObserver(
@@ -14,7 +14,10 @@ enum AirportWindowCloseObserver {
                       let window = notification.object as? NSWindow,
                       let icao = AirportWindowRole.icaoFromMainWindow(window)
                 else { return }
-                AppDelegate.coordinator?.closeAirportWindow(icao: icao)
+                AppDelegate.coordinator?.noteMainAirportWillClose(icao: icao)
+                DispatchQueue.main.async {
+                    AppDelegate.reconcileOpenAirportsAndTracking()
+                }
             }
         }
     }

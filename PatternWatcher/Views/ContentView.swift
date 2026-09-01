@@ -59,29 +59,38 @@ struct BootstrapView: View {
     private func restoreAirportWindowsIfNeeded() {
         guard !didRestoreWindows else { return }
         didRestoreWindows = true
+        #if os(macOS)
+        if coordinator.hasOpenMainAirportWindows {
+            coordinator.finishLaunchRestore()
+            reconcileWindowsAndTracking()
+            dismissWindow(id: "bootstrap")
+            return
+        }
+        #endif
         let toOpen = AppSettings.openAirportICAOs
         guard !toOpen.isEmpty else { return }
         for icao in toOpen {
             openWindow(id: "airport", value: icao)
         }
         coordinator.finishLaunchRestore()
-        syncTrackedAirports()
+        reconcileWindowsAndTracking()
         dismissWindow(id: "bootstrap")
     }
 
     private func openAirport(_ airport: Airport) {
         coordinator.dismissNewAirportPicker()
         coordinator.registerOpen(airport.icao)
-        syncTrackedAirports()
+        reconcileWindowsAndTracking()
         openWindow(id: "airport", value: airport.icao)
         dismissWindow(id: "bootstrap")
     }
 
+    private func reconcileWindowsAndTracking() {
+        coordinator.reconcileOpenAirportsAndTracking(engine: engine, airportForICAO: airportForICAO)
+    }
+
     private func syncTrackedAirports() {
-        let airports = coordinator.openICAOs.compactMap { icao in
-            airportForICAO(icao)
-        }
-        engine.updateTrackedAirports(airports)
+        reconcileWindowsAndTracking()
     }
 
     private func airportForICAO(_ icao: String) -> Airport? {
@@ -143,7 +152,14 @@ struct AirportWindowView: View {
         }
         .focusedValue(\.airportWindowICAO, icao)
         #if os(macOS)
-        .background(AirportWindowCloseTracker(icao: icao, role: .main, coordinator: coordinator))
+        .background(
+            AirportWindowCloseTracker(
+                icao: icao,
+                role: .main,
+                coordinator: coordinator,
+                onMainWindowWillClose: handleMainAirportWindowClose
+            )
+        )
         #endif
         .onAppear {
             engine.attach(modelContext: modelContext)
@@ -166,23 +182,20 @@ struct AirportWindowView: View {
             #else
             coordinator.registerOpen(icao)
             #endif
-            syncTrackedAirports()
-        }
-        .onDisappear {
+            reconcileWindowsAndTracking()
             #if os(macOS)
-            guard !AppDelegate.isTerminating else { return }
-            coordinator.closeAirportWindow(icao: icao)
-            coordinator.dismissAllSupplementary(for: icao, dismissWindow: dismissWindow)
-            syncTrackedAirports()
-            if coordinator.openICAOs.isEmpty {
-                openWindow(id: "bootstrap")
+            if coordinator.hasOpenMainAirportWindows {
+                dismissWindow(id: "bootstrap")
             }
-            #else
-            coordinator.closeAirportWindow(icao: icao)
-            coordinator.dismissAllSupplementary(for: icao, dismissWindow: dismissWindow)
-            syncTrackedAirports()
             #endif
         }
+        #if os(iOS)
+        .onDisappear {
+            coordinator.closeAirportWindow(icao: icao)
+            coordinator.dismissAllSupplementary(for: icao, dismissWindow: dismissWindow)
+            syncTrackedAirports()
+        }
+        #endif
         #if os(iOS)
         .sheet(isPresented: bindShowingSettings) {
             SettingsView()
@@ -231,19 +244,38 @@ struct AirportWindowView: View {
     }
 
     private func syncTrackedAirports() {
-        let airports = coordinator.openICAOs.compactMap { openICAO in
-            storedAirports.first(where: { $0.icao == openICAO })?.asAirport
-                ?? AirportCatalog.shared.airport(code: openICAO)
-        }
-        engine.updateTrackedAirports(airports)
+        reconcileWindowsAndTracking()
+    }
+
+    private func reconcileWindowsAndTracking() {
+        coordinator.reconcileOpenAirportsAndTracking(engine: engine, airportForICAO: { icao in
+            storedAirports.first(where: { $0.icao == icao })?.asAirport
+                ?? AirportCatalog.shared.airport(code: icao)
+        })
     }
 
     private func openAnotherAirport(_ airport: Airport) {
         coordinator.dismissNewAirportPicker()
         coordinator.registerOpen(airport.icao)
-        syncTrackedAirports()
+        reconcileWindowsAndTracking()
         openWindow(id: "airport", value: airport.icao)
     }
+
+    #if os(macOS)
+    private func handleMainAirportWindowClose() {
+        coordinator.dismissAllSupplementary(for: icao, dismissWindow: dismissWindow)
+        coordinator.noteMainAirportWillClose(icao: icao)
+        DispatchQueue.main.async {
+            reconcileWindowsAndTracking()
+            if coordinator.hasOpenMainAirportWindows {
+                dismissWindow(id: "bootstrap")
+            } else {
+                coordinator.dismissNewAirportPicker()
+                openWindow(id: "bootstrap")
+            }
+        }
+    }
+    #endif
 }
 
 private struct AirportDetailView: View {

@@ -90,8 +90,19 @@ final class TrackingEngine {
     @ObservationIgnored
     private var recordedStepForwardPending = false
 
+    /// Airports currently polled for pattern tracking.
+    var trackedAirports: [Airport] {
+        knownAirports
+    }
+
     func attach(modelContext: ModelContext) {
         self.modelContext = modelContext
+    }
+
+    /// Drop one airport from live polling when its window closes.
+    func removeTrackedAirport(_ icao: String) {
+        guard knownAirports.contains(where: { $0.icao == icao }) else { return }
+        updateTrackedAirports(knownAirports.filter { $0.icao != icao })
     }
 
     /// Sync polling to the airports with open windows.
@@ -105,9 +116,10 @@ final class TrackingEngine {
             detectors[airport.icao] = LandingDetector()
         }
         let tracked = Set(airports.map(\.icao))
+        let removedFromTracking = previouslyTracked.subtracting(tracked)
         detectors = detectors.filter { tracked.contains($0.key) }
         aircraftByAirport = aircraftByAirport.filter { tracked.contains($0.key) }
-        liveAirportICAOs = liveAirportICAOs.intersection(tracked)
+        liveAirportICAOs.subtract(removedFromTracking)
         activeRunwayByAirport = activeRunwayByAirport.filter { tracked.contains($0.key) }
         patternOccupancyByAirport = patternOccupancyByAirport.filter { tracked.contains($0.key) }
         patternFeedGapsByAirport = patternFeedGapsByAirport.filter { tracked.contains($0.key) }
