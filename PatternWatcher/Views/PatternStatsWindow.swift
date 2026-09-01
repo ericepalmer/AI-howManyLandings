@@ -6,6 +6,9 @@ struct PatternStatsWindow: View {
     let airportICAO: String
     @Environment(TrackingEngine.self) private var engine
 
+    @State private var occupancySelectedHour: Date?
+    @State private var landingsSelectedHour: Date?
+
     private var now: Date { engine.simulationNow }
 
     private var snapshot: PatternStatsSnapshot {
@@ -149,14 +152,14 @@ struct PatternStatsWindow: View {
                     Text("Hourly average aircraft in pattern")
                         .font(.subheadline.weight(.semibold))
 
-                    occupancyHourlyChart
+                    hourlyChart(kind: .occupancy, selectedHour: $occupancySelectedHour)
                         .frame(width: chartContentWidth, height: 140)
 
                     Text("Hourly landings")
                         .font(.subheadline.weight(.semibold))
                         .padding(.top, 4)
 
-                    landingsHourlyChart
+                    hourlyChart(kind: .landings, selectedHour: $landingsSelectedHour)
                         .frame(width: chartContentWidth, height: 120)
                 }
                 .id("hourlyCharts")
@@ -177,46 +180,57 @@ struct PatternStatsWindow: View {
         }
     }
 
-    private var occupancyHourlyChart: some View {
+    private enum HourlyChartKind {
+        case occupancy
+        case landings
+    }
+
+    private func hourlyChart(kind: HourlyChartKind, selectedHour: Binding<Date?>) -> some View {
         Chart {
             midnightRuleMarks()
+            if let hourStart = selectedHour.wrappedValue {
+                RuleMark(x: .value("Selected", hourlyBarCenter(for: hourStart)))
+                    .foregroundStyle(Color.primary.opacity(0.22))
+                    .lineStyle(StrokeStyle(lineWidth: 1.5))
+            }
             ForEach(hourlySeries) { bucket in
-                if bucket.occupancySampleCount > 0 {
-                    hourlyBarMark(
-                        hourStart: bucket.hourStart,
-                        value: bucket.averageOccupancy,
-                        color: statsOccupancyBarColor
-                    )
+                switch kind {
+                case .occupancy:
+                    if bucket.occupancySampleCount > 0 {
+                        hourlyBarMark(
+                            hourStart: bucket.hourStart,
+                            value: bucket.averageOccupancy,
+                            color: statsOccupancyBarColor
+                        )
+                    }
+                case .landings:
+                    if bucket.occupancySampleCount > 0 || bucket.landingCount > 0 {
+                        hourlyBarMark(
+                            hourStart: bucket.hourStart,
+                            value: Double(bucket.landingCount),
+                            color: statsLandingBarColor
+                        )
+                    }
                 }
             }
         }
         .chartYScale(domain: .automatic(includesZero: true))
-        .chartYAxisLabel("Aircraft")
+        .chartYAxisLabel(kind == .occupancy ? "Aircraft" : "Landings")
         .chartXScale(domain: fullXDomain)
         .chartXAxis {
-            hourlyGridAxisMarks()
+            if kind == .occupancy {
+                hourlyGridAxisMarks()
+            } else {
+                hourlyDateAxisMarks()
+            }
+        }
+        .chartOverlay { proxy in
+            hourlySelectionOverlay(proxy: proxy, kind: kind, selectedHour: selectedHour)
         }
     }
 
-    private var landingsHourlyChart: some View {
-        Chart {
-            midnightRuleMarks()
-            ForEach(hourlySeries) { bucket in
-                if bucket.occupancySampleCount > 0 || bucket.landingCount > 0 {
-                    hourlyBarMark(
-                        hourStart: bucket.hourStart,
-                        value: Double(bucket.landingCount),
-                        color: statsLandingBarColor
-                    )
-                }
-            }
-        }
-        .chartYScale(domain: .automatic(includesZero: true))
-        .chartYAxisLabel("Landings")
-        .chartXScale(domain: fullXDomain)
-        .chartXAxis {
-            hourlyDateAxisMarks()
-        }
+    private func hourlyBarCenter(for hourStart: Date) -> Date {
+        hourStart.addingTimeInterval(PatternHourlyStats.hourInterval / 2)
     }
 
     @ChartContentBuilder
@@ -233,6 +247,98 @@ struct PatternStatsWindow: View {
         )
         .foregroundStyle(color)
         .cornerRadius(2)
+    }
+
+    private func hourlySelectionOverlay(
+        proxy: ChartProxy,
+        kind: HourlyChartKind,
+        selectedHour: Binding<Date?>
+    ) -> some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .topLeading) {
+                Color.clear
+                    .contentShape(Rectangle())
+                    #if os(macOS)
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active(let location):
+                            selectedHour.wrappedValue = hourAt(
+                                location: location,
+                                proxy: proxy,
+                                geometry: geometry
+                            )
+                        case .ended:
+                            selectedHour.wrappedValue = nil
+                        }
+                    }
+                    #endif
+                    #if os(iOS)
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                if let hour = hourAt(
+                                    location: value.location,
+                                    proxy: proxy,
+                                    geometry: geometry
+                                ) {
+                                    selectedHour.wrappedValue = hour
+                                }
+                            }
+                    )
+                    #endif
+
+                if let hourStart = selectedHour.wrappedValue,
+                   let bucket = bucketForHour(hourStart),
+                   let plotFrame = proxy.plotFrame,
+                   let xPosition = proxy.position(forX: hourlyBarCenter(for: hourStart)) {
+                    let frame = geometry[plotFrame]
+                    let x = frame.origin.x + xPosition
+                    let clampedX = min(max(x, 56), geometry.size.width - 56)
+                    hourlyTooltip(bucket: bucket, kind: kind)
+                        .position(x: clampedX, y: 18)
+                }
+            }
+        }
+    }
+
+    private func hourAt(location: CGPoint, proxy: ChartProxy, geometry: GeometryProxy) -> Date? {
+        guard let plotFrame = proxy.plotFrame else { return nil }
+        let frame = geometry[plotFrame]
+        let x = location.x - frame.origin.x
+        guard let date: Date = proxy.value(atX: x) else { return nil }
+        return PatternHourlyStats.hourStart(for: date)
+    }
+
+    private func bucketForHour(_ date: Date) -> PatternHourlyBucket? {
+        let hour = PatternHourlyStats.hourStart(for: date)
+        return hourlySeries.first { $0.hourStart == hour }
+    }
+
+    private func hourlyTooltip(bucket: PatternHourlyBucket, kind: HourlyChartKind) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(bucket.hourStart, format: .dateTime.weekday(.abbreviated).day().hour(.defaultDigits(amPM: .abbreviated)))
+                .font(.caption2.weight(.semibold))
+            switch kind {
+            case .occupancy:
+                if bucket.occupancySampleCount > 0 {
+                    Text(formatAverage(bucket.averageOccupancy))
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                } else {
+                    Text("—")
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                }
+            case .landings:
+                Text("\(bucket.landingCount)")
+                    .font(.caption.monospacedDigit().weight(.semibold))
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5)
+        )
     }
 
     @ChartContentBuilder

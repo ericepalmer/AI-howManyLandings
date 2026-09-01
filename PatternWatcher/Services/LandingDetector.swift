@@ -151,9 +151,14 @@ struct LandingDetector: Sendable {
         var isCoasting: Bool { !inRange }
 
         /// Landing trail still in the post-landing display window.
+        /// Live ADS-B uses time since touchdown; after signal loss only
+        /// `Geo.trackerCoastSeconds` from the last report.
         var isPostLandingTrail: Bool {
-            guard let lastLandingAt else { return false }
-            return asOf.timeIntervalSince(lastLandingAt) <= LandingDetector.postLandingTrailVisible
+            guard lastLandingAt != nil else { return false }
+            if isCoasting {
+                return asOf.timeIntervalSince(lastSeen) <= Geo.trackerCoastSeconds
+            }
+            return asOf.timeIntervalSince(lastLandingAt!) <= LandingDetector.postLandingTrailVisible
         }
 
         /// On the surface after a landing, still inside the post-landing window.
@@ -218,8 +223,8 @@ struct LandingDetector: Sendable {
             return true
         }
 
-        /// Pattern tracker: airborne in-pattern, plus recently landed (5 min).
-        /// Lost airborne contacts stay ≤ 90 seconds.
+        /// Pattern tracker: airborne in-pattern, plus recently landed (live ADS-B or ≤ 90s lost).
+        /// Lost airborne contacts stay ≤ `Geo.trackerCoastSeconds`.
         var appearsInTracker: Bool {
             if isRecentlyLandedForTracker { return true }
             if hasPendingLanding {
@@ -242,7 +247,7 @@ struct LandingDetector: Sendable {
             if appearsInTracker { return true }
             if isCoasting, lastLandingAt != nil { return isPostLandingTrail }
             if isCoasting {
-                return asOf.timeIntervalSince(lastSeen) <= 90
+                return asOf.timeIntervalSince(lastSeen) <= Geo.trackerCoastSeconds
             }
             return true
         }
