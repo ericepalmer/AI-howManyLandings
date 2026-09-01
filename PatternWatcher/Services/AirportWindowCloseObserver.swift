@@ -12,7 +12,7 @@ enum AirportWindowCloseObserver {
             Task { @MainActor in
                 guard !AppDelegate.isTerminating,
                       let window = notification.object as? NSWindow,
-                      let icao = AirportWindowRole.icaoFromMainWindow(window)
+                      let icao = AirportWindowRole.icaoFromMainAirportWindow(window)
                 else { return }
                 AppDelegate.coordinator?.noteMainAirportWillClose(icao: icao)
                 DispatchQueue.main.async {

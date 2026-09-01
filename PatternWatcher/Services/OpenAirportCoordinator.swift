@@ -161,27 +161,20 @@ final class OpenAirportCoordinator {
                 return icao
             }
         }
-        if let icao = AirportWindowRole.icaoFromMainWindow(window),
+        if let icao = AirportWindowRole.icaoFromMainAirportWindow(window),
            openICAOs.contains(icao) {
             return icao
         }
         return nil
     }
 
-    /// Open main airport windows in window-list order (identifier `pw-airport-*` or title).
+    /// Open main airport windows in window-list order (`pw-airport-*` only).
     func mainWindowICAOsOrdered() -> [String] {
         var seen = Set<String>()
         var ordered: [String] = []
         for window in NSApp.windows {
             guard window.isVisible || window.isMiniaturized else { continue }
-            let icao: String?
-            if let id = window.identifier,
-               let fromID = AirportWindowRole.main.icao(from: id) {
-                icao = fromID
-            } else {
-                icao = AirportWindowRole.icaoFromMainWindow(window)
-            }
-            guard let icao, icao.count == 4 else { continue }
+            guard let icao = AirportWindowRole.icaoFromMainAirportWindow(window) else { continue }
             guard !seen.contains(icao) else { continue }
             seen.insert(icao)
             ordered.append(icao)
