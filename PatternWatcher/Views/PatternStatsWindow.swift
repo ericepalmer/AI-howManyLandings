@@ -6,9 +6,6 @@ struct PatternStatsWindow: View {
     let airportICAO: String
     @Environment(TrackingEngine.self) private var engine
 
-    @State private var occupancySelectedHour: Date?
-    @State private var landingsSelectedHour: Date?
-
     private var now: Date { engine.simulationNow }
 
     private var snapshot: PatternStatsSnapshot {
@@ -21,6 +18,11 @@ struct PatternStatsWindow: View {
 
     private var hasHourlyData: Bool {
         hourlySeries.contains { $0.occupancySampleCount > 0 || $0.landingCount > 0 }
+    }
+
+    private var peakLandingsPerHour: Int? {
+        guard hasHourlyData else { return nil }
+        return hourlySeries.map(\.landingCount).max()
     }
 
     /// ~18 hours visible in the chart viewport (hourly ticks, zoomed in).
@@ -79,6 +81,19 @@ struct PatternStatsWindow: View {
     private var statsContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Hourly history (7 days)")
+                        .font(.headline)
+
+                    if hourlySeries.isEmpty || !hasHourlyData {
+                        Text("Collecting hourly statistics…")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        hourlyHistoryCharts
+                    }
+                }
+
                 statsSection(
                     title: "Average aircraft in the pattern",
                     rows: [
@@ -95,22 +110,10 @@ struct PatternStatsWindow: View {
                     rows: [
                         ("Last 5 minutes", formatOptionalInt(snapshot.landingsLast5Min)),
                         ("Last 30 minutes", formatOptionalInt(snapshot.landingsLast30Min)),
-                        ("Last hour", formatOptionalInt(snapshot.landingsLastHour))
+                        ("Last hour", formatOptionalInt(snapshot.landingsLastHour)),
+                        ("Peak per hour", formatOptionalInt(peakLandingsPerHour))
                     ]
                 )
-
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Hourly history (7 days)")
-                        .font(.headline)
-
-                    if hourlySeries.isEmpty || !hasHourlyData {
-                        Text("Collecting hourly statistics…")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        hourlyHistoryCharts
-                    }
-                }
             }
             .padding(16)
         }
@@ -152,15 +155,22 @@ struct PatternStatsWindow: View {
                     Text("Hourly average aircraft in pattern")
                         .font(.subheadline.weight(.semibold))
 
-                    hourlyChart(kind: .occupancy, selectedHour: $occupancySelectedHour)
-                        .frame(width: chartContentWidth, height: 140)
+                    hourlyChart(kind: .occupancy)
+                        .frame(width: chartContentWidth, height: 168)
 
-                    Text("Hourly landings")
-                        .font(.subheadline.weight(.semibold))
-                        .padding(.top, 4)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Hourly landings")
+                            .font(.subheadline.weight(.semibold))
+                        if let peak = peakLandingsPerHour {
+                            Text("Peak \(peak) per hour")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.top, 4)
 
-                    hourlyChart(kind: .landings, selectedHour: $landingsSelectedHour)
-                        .frame(width: chartContentWidth, height: 120)
+                    hourlyChart(kind: .landings)
+                        .frame(width: chartContentWidth, height: 148)
                 }
                 .id("hourlyCharts")
             }
@@ -185,14 +195,9 @@ struct PatternStatsWindow: View {
         case landings
     }
 
-    private func hourlyChart(kind: HourlyChartKind, selectedHour: Binding<Date?>) -> some View {
+    private func hourlyChart(kind: HourlyChartKind) -> some View {
         Chart {
             midnightRuleMarks()
-            if let hourStart = selectedHour.wrappedValue {
-                RuleMark(x: .value("Selected", hourlyBarCenter(for: hourStart)))
-                    .foregroundStyle(Color.primary.opacity(0.22))
-                    .lineStyle(StrokeStyle(lineWidth: 1.5))
-            }
             ForEach(hourlySeries) { bucket in
                 switch kind {
                 case .occupancy:
@@ -200,7 +205,8 @@ struct PatternStatsWindow: View {
                         hourlyBarMark(
                             hourStart: bucket.hourStart,
                             value: bucket.averageOccupancy,
-                            color: statsOccupancyBarColor
+                            color: statsOccupancyBarColor,
+                            label: formatAverage(bucket.averageOccupancy)
                         )
                     }
                 case .landings:
@@ -208,7 +214,8 @@ struct PatternStatsWindow: View {
                         hourlyBarMark(
                             hourStart: bucket.hourStart,
                             value: Double(bucket.landingCount),
-                            color: statsLandingBarColor
+                            color: statsLandingBarColor,
+                            label: "\(bucket.landingCount)"
                         )
                     }
                 }
@@ -224,9 +231,6 @@ struct PatternStatsWindow: View {
                 hourlyDateAxisMarks()
             }
         }
-        .chartOverlay { proxy in
-            hourlySelectionOverlay(proxy: proxy, kind: kind, selectedHour: selectedHour)
-        }
     }
 
     private func hourlyBarCenter(for hourStart: Date) -> Date {
@@ -234,11 +238,17 @@ struct PatternStatsWindow: View {
     }
 
     @ChartContentBuilder
-    private func hourlyBarMark(hourStart: Date, value: Double, color: Color) -> some ChartContent {
+    private func hourlyBarMark(
+        hourStart: Date,
+        value: Double,
+        color: Color,
+        label: String
+    ) -> some ChartContent {
         let hour = PatternHourlyStats.hourInterval
         let inset = hour * (1 - hourlyBarWidthFraction) / 2
         let barStart = hourStart.addingTimeInterval(inset)
         let barEnd = hourStart.addingTimeInterval(hour - inset)
+        let barCenter = hourlyBarCenter(for: hourStart)
         RectangleMark(
             xStart: .value("Hour", barStart),
             xEnd: .value("Hour", barEnd),
@@ -247,98 +257,17 @@ struct PatternStatsWindow: View {
         )
         .foregroundStyle(color)
         .cornerRadius(2)
-    }
-
-    private func hourlySelectionOverlay(
-        proxy: ChartProxy,
-        kind: HourlyChartKind,
-        selectedHour: Binding<Date?>
-    ) -> some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .topLeading) {
-                Color.clear
-                    .contentShape(Rectangle())
-                    #if os(macOS)
-                    .onContinuousHover { phase in
-                        switch phase {
-                        case .active(let location):
-                            selectedHour.wrappedValue = hourAt(
-                                location: location,
-                                proxy: proxy,
-                                geometry: geometry
-                            )
-                        case .ended:
-                            selectedHour.wrappedValue = nil
-                        }
-                    }
-                    #endif
-                    #if os(iOS)
-                    .gesture(
-                        DragGesture(minimumDistance: 0)
-                            .onChanged { value in
-                                if let hour = hourAt(
-                                    location: value.location,
-                                    proxy: proxy,
-                                    geometry: geometry
-                                ) {
-                                    selectedHour.wrappedValue = hour
-                                }
-                            }
-                    )
-                    #endif
-
-                if let hourStart = selectedHour.wrappedValue,
-                   let bucket = bucketForHour(hourStart),
-                   let plotFrame = proxy.plotFrame,
-                   let xPosition = proxy.position(forX: hourlyBarCenter(for: hourStart)) {
-                    let frame = geometry[plotFrame]
-                    let x = frame.origin.x + xPosition
-                    let clampedX = min(max(x, 56), geometry.size.width - 56)
-                    hourlyTooltip(bucket: bucket, kind: kind)
-                        .position(x: clampedX, y: 18)
-                }
-            }
-        }
-    }
-
-    private func hourAt(location: CGPoint, proxy: ChartProxy, geometry: GeometryProxy) -> Date? {
-        guard let plotFrame = proxy.plotFrame else { return nil }
-        let frame = geometry[plotFrame]
-        let x = location.x - frame.origin.x
-        guard let date: Date = proxy.value(atX: x) else { return nil }
-        return PatternHourlyStats.hourStart(for: date)
-    }
-
-    private func bucketForHour(_ date: Date) -> PatternHourlyBucket? {
-        let hour = PatternHourlyStats.hourStart(for: date)
-        return hourlySeries.first { $0.hourStart == hour }
-    }
-
-    private func hourlyTooltip(bucket: PatternHourlyBucket, kind: HourlyChartKind) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(bucket.hourStart, format: .dateTime.weekday(.abbreviated).day().hour(.defaultDigits(amPM: .abbreviated)))
-                .font(.caption2.weight(.semibold))
-            switch kind {
-            case .occupancy:
-                if bucket.occupancySampleCount > 0 {
-                    Text(formatAverage(bucket.averageOccupancy))
-                        .font(.caption.monospacedDigit().weight(.semibold))
-                } else {
-                    Text("—")
-                        .font(.caption.monospacedDigit().weight(.semibold))
-                }
-            case .landings:
-                Text("\(bucket.landingCount)")
-                    .font(.caption.monospacedDigit().weight(.semibold))
-            }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5)
+        PointMark(
+            x: .value("Hour", barCenter),
+            y: .value("Count", value)
         )
+        .symbolSize(0)
+        .annotation(position: .top, spacing: 2) {
+            Text(label)
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .fixedSize()
+        }
     }
 
     @ChartContentBuilder
