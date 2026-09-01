@@ -89,36 +89,98 @@ struct PatternOccupancyWindow: View {
         #endif
     }
 
+    private let yAxisColumnWidth: CGFloat = 44
+
     private var scrollableChart: some View {
         GeometryReader { geometry in
-            let viewportWidth = max(geometry.size.width, 320)
-            let contentWidth = viewportWidth * CGFloat(fullHistoryWindow / viewportDuration)
+            let scrollAreaWidth = max(geometry.size.width - yAxisColumnWidth, 280)
+            let contentWidth = scrollAreaWidth * CGFloat(fullHistoryWindow / viewportDuration)
+            let chartHeight = geometry.size.height
 
-            ScrollViewReader { proxy in
-                ScrollView(.horizontal, showsIndicators: true) {
-                    occupancyChart
-                        .frame(width: contentWidth, height: geometry.size.height)
-                        .id("occupancyChart")
-                }
-                .onAppear {
-                    scrollToLiveEdge(proxy)
-                }
-                #if os(macOS)
-                .overlay(alignment: .bottomTrailing) {
-                    Button("Now") {
+            HStack(spacing: 0) {
+                occupancyYAxisChart
+                    .frame(width: yAxisColumnWidth, height: chartHeight)
+
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: true) {
+                        occupancyPlotChart
+                            .frame(width: contentWidth, height: chartHeight)
+                            .id("occupancyChart")
+                    }
+                    .onAppear {
                         scrollToLiveEdge(proxy)
                     }
-                    .buttonStyle(.borderless)
-                    .font(.caption2)
-                    .padding(4)
+                    #if os(macOS)
+                    .overlay(alignment: .bottomTrailing) {
+                        Button("Now") {
+                            scrollToLiveEdge(proxy)
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.caption2)
+                        .padding(4)
+                    }
+                    #endif
                 }
-                #endif
             }
         }
     }
 
-    private var occupancyChart: some View {
+    /// Fixed column: Y scale only (matches scrollable plot domain).
+    private var occupancyYAxisChart: some View {
         Chart {
+            RuleMark(y: .value("Aircraft", 0))
+                .opacity(0)
+        }
+        .chartYScale(domain: 0...yMax)
+        .chartXScale(domain: xDomain)
+        .chartYAxisLabel("Aircraft")
+        .chartYAxis {
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 6)) { value in
+                AxisValueLabel {
+                    if let n = value.as(Int.self) {
+                        Text("\(n)")
+                    }
+                }
+            }
+        }
+        .chartXAxis(.hidden)
+    }
+
+    private var occupancyPlotChart: some View {
+        Chart {
+            occupancyChartMarks
+        }
+        .chartYScale(domain: 0...yMax)
+        .chartXScale(domain: xDomain)
+        .chartYAxis(.hidden)
+        .chartXAxis(.hidden)
+    }
+
+    @ChartContentBuilder
+    private var occupancyChartMarks: some ChartContent {
+        ForEach(0...yMax, id: \.self) { level in
+            RuleMark(y: .value("Aircraft", Double(level)))
+                .foregroundStyle(Color.secondary.opacity(0.12))
+                .lineStyle(StrokeStyle(lineWidth: 0.5))
+        }
+
+        ForEach(quarterHourTicks, id: \.self) { tick in
+                RuleMark(x: .value("Time", tick))
+                    .foregroundStyle(Color.secondary.opacity(0.22))
+                    .lineStyle(StrokeStyle(lineWidth: 0.5))
+
+                PointMark(
+                    x: .value("Time", tick),
+                    y: .value("Aircraft", Double(yMax))
+                )
+                .symbolSize(0)
+                .annotation(position: .top, alignment: .center) {
+                    Text(tick, format: .dateTime.hour().minute())
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             ForEach(visibleGaps) { gap in
                 RectangleMark(
                     xStart: .value("Time", gap.start),
@@ -193,33 +255,10 @@ struct PatternOccupancyWindow: View {
                     PatternEventAxisLabel(text: marker.label)
                 }
             }
-        }
-        .chartYScale(domain: 0...yMax)
-        .chartXScale(domain: xDomain)
-        .chartYAxisLabel("Aircraft")
-        .chartYAxis {
-            AxisMarks(position: .leading, values: .automatic(desiredCount: 6)) { value in
-                AxisGridLine()
-                AxisValueLabel {
-                    if let n = value.as(Int.self) {
-                        Text("\(n)")
-                    }
-                }
-            }
-        }
-        .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: axisMarkCount)) { _ in
-                AxisGridLine()
-                AxisValueLabel(format: .dateTime.hour().minute())
-            }
-        }
     }
 
-    private var axisMarkCount: Int {
-        let minutes = viewportDuration / 60
-        if minutes <= 10 { return 5 }
-        if minutes <= 60 { return 6 }
-        return 8
+    private var quarterHourTicks: [Date] {
+        PatternOccupancy.quarterHourTicks(from: fullXStart, through: chartEnd)
     }
 
     private func scrollToLiveEdge(_ proxy: ScrollViewProxy) {

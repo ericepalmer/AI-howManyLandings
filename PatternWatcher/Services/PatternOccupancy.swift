@@ -70,6 +70,28 @@ enum PatternOccupancy {
     static let minChartWindow: TimeInterval = 5 * 60
     /// Mini sidebar chart: panel width spans this window.
     static let miniChartWindow: TimeInterval = 10 * 60
+    /// Pattern plot vertical grid lines and time labels.
+    static let chartQuarterHourInterval: TimeInterval = 15 * 60
+
+    /// Quarter-hour timestamps from the first tick on or after `start` through `end`.
+    static func quarterHourTicks(from start: Date, through end: Date) -> [Date] {
+        let calendar = Calendar.current
+        let interval = chartQuarterHourInterval
+        var components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: start)
+        components.second = 0
+        let minute = components.minute ?? 0
+        components.minute = (minute / 15) * 15
+        guard var tick = calendar.date(from: components) else { return [] }
+        if tick < start {
+            tick = tick.addingTimeInterval(interval)
+        }
+        var ticks: [Date] = []
+        while tick <= end {
+            ticks.append(tick)
+            tick = tick.addingTimeInterval(interval)
+        }
+        return ticks
+    }
 
     /// Elapsed time after the last poll before treating the gap as missing data.
     static func feedGapThreshold(pollInterval: TimeInterval) -> TimeInterval {
