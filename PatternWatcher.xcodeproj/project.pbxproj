@@ -243,7 +243,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
-                INFOPLIST_KEY_CFBundleDisplayName = "Pattern Watcher";
+				INFOPLIST_KEY_CFBundleDisplayName = "Pattern Watcher";
 				INFOPLIST_KEY_CFBundleName = "Pattern Watcher";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
@@ -289,7 +289,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
-                INFOPLIST_KEY_CFBundleDisplayName = "Pattern Watcher";
+				INFOPLIST_KEY_CFBundleDisplayName = "Pattern Watcher";
 				INFOPLIST_KEY_CFBundleName = "Pattern Watcher";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";

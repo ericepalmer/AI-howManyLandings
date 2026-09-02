@@ -82,6 +82,8 @@ struct ADSFeedWindow: View {
         #if os(macOS)
         .frame(minWidth: 860, minHeight: 480)
         #endif
+        .onAppear { engine.setADSFeedWindowOpen(true, airportICAO: airportICAO) }
+        .onDisappear { engine.setADSFeedWindowOpen(false, airportICAO: airportICAO) }
     }
 
     @ViewBuilder

@@ -89,6 +89,9 @@ final class TrackingEngine {
     /// Forces the next recorded `pollOnce` to advance one poll even while paused.
     @ObservationIgnored
     private var recordedStepForwardPending = false
+    /// Airports with an open ADS-B feed window (accumulate saved polls / log only for these).
+    @ObservationIgnored
+    private var adsFeedWindowOpenICAOs: Set<String> = []
 
     /// Airports currently polled for pattern tracking.
     var trackedAirports: [Airport] {
@@ -133,6 +136,7 @@ final class TrackingEngine {
         adsLatestPollByAirport = adsLatestPollByAirport.filter { tracked.contains($0.key) }
         adsLogLinesByAirport = adsLogLinesByAirport.filter { tracked.contains($0.key) }
         adsSavedPollsByAirport = adsSavedPollsByAirport.filter { tracked.contains($0.key) }
+        adsFeedWindowOpenICAOs = adsFeedWindowOpenICAOs.intersection(tracked)
 
         let addedNewField = tracked.contains { !previouslyTracked.contains($0) }
         let newAirports = airports.filter { !previouslyTracked.contains($0.icao) }
@@ -237,6 +241,15 @@ final class TrackingEngine {
         liveAirportICAOs.contains(icao)
     }
 
+    /// Called when the ADS-B feed supplementary window opens or closes.
+    func setADSFeedWindowOpen(_ open: Bool, airportICAO: String) {
+        if open {
+            adsFeedWindowOpenICAOs.insert(airportICAO)
+        } else {
+            adsFeedWindowOpenICAOs.remove(airportICAO)
+        }
+    }
+
     private func airport(for icao: String) -> Airport? {
         knownAirports.first { $0.icao == icao }
     }
@@ -339,58 +352,47 @@ final class TrackingEngine {
                     : "Connecting to \(AppSettings.feedSource.title)…"
             }
             do {
-                let fetched = try await fetch(for: airport, recordedPoll: recordedPoll)
+                let detectorSnapshot = detectors[airport.icao] ?? LandingDetector()
+                let accumulateADS = adsFeedWindowOpenICAOs.contains(airport.icao)
+                let feedSource = AppSettings.feedSource
+                let clientID = AppSettings.clientID
+                let clientSecret = AppSettings.clientSecret
+                let trackingRadius = AppSettings.trackingRadiusNM
+                let replayFileName = recordedReplayFileName
+
+                let fetched = try await TrafficFeedFetcher.fetch(
+                    for: airport,
+                    feedSource: feedSource,
+                    clientID: clientID,
+                    clientSecret: clientSecret,
+                    trackingRadiusNM: trackingRadius,
+                    recordedPoll: recordedPoll,
+                    recordedFileName: replayFileName
+                )
+
+                let processed = await Task.detached(priority: .userInitiated) {
+                    AirportPollWorker.process(
+                        detector: detectorSnapshot,
+                        snapshots: fetched.result.snapshots,
+                        airport: airport,
+                        trackingRadiusNM: trackingRadius,
+                        now: fetched.result.serverTime,
+                        sourceName: fetched.sourceName,
+                        accumulateADSFeed: accumulateADS
+                    )
+                }.value
+
                 newestCredits = fetched.result.creditsRemaining ?? newestCredits
                 lastRateLimit = nil
                 anySuccess = true
                 usedName = fetched.sourceName
                 liveAirportICAOs.insert(airport.icao)
-                let preferredICAO = Set((detectors[airport.icao]?.trackedICAO24s) ?? [])
-                let snapshots = AircraftSnapshotDeduplicator.deduplicated(
-                    fetched.result.snapshots,
-                    preferredICAO24: preferredICAO
-                )
-                recordADSFeed(
-                    snapshots: snapshots,
+
+                let inRange = applyAirportPollResult(
                     airport: airport,
-                    sourceName: fetched.sourceName,
-                    receivedAt: fetched.result.serverTime
+                    processed: processed,
+                    accumulateADSFeed: accumulateADS
                 )
-                var detector = detectors[airport.icao] ?? LandingDetector()
-                let output = detector.ingest(
-                    snapshots: snapshots,
-                    airport: airport,
-                    trackingRadiusNM: AppSettings.trackingRadiusNM,
-                    now: fetched.result.serverTime
-                )
-                detectors[airport.icao] = detector
-                aircraftByAirport[airport.icao] = output.aircraft
-                if let active = detector.activeRunwayDirection {
-                    activeRunwayByAirport[airport.icao] = active
-                }
-                recordPatternOccupancy(
-                    airportICAO: airport.icao,
-                    aircraft: output.aircraft,
-                    at: fetched.result.serverTime
-                )
-                recordLandingMarkers(
-                    airportICAO: airport.icao,
-                    markers: output.landingMarkers,
-                    at: fetched.result.serverTime
-                )
-                recordTakeoffMarkers(
-                    airportICAO: airport.icao,
-                    markers: output.takeoffMarkers,
-                    at: fetched.result.serverTime
-                )
-                recordPatternPresenceLog(
-                    airportICAO: airport.icao,
-                    airportElevationFt: airport.elevationFt,
-                    aircraft: output.aircraft,
-                    at: fetched.result.serverTime
-                )
-                let inRange = output.aircraft.filter(\.inRange).count
-                lastAircraftCountByAirport[airport.icao] = inRange
                 totalAircraft += inRange
             } catch let error as OpenSkyError {
                 errors.append(error.localizedDescription)
@@ -566,58 +568,54 @@ final class TrackingEngine {
         }
         liveAirportICAOs.insert(airport.icao)
 
-        var detector = LandingDetector()
         var lastAircraft: [LandingDetector.TrackedAircraft] = []
-        for index in 0..<clamped {
-            if Task.isCancelled { return }
-            let poll = recording.polls[index]
-            let snapshots = AircraftSnapshotDeduplicator.deduplicated(
-                poll.snapshots,
-                preferredICAO24: detector.trackedICAO24s
-            )
-            recordADSFeed(
-                snapshots: snapshots,
+        let trackingRadius = AppSettings.trackingRadiusNM
+        let replaySourceName = recordedReplayFileName.map { "Recorded · \($0)" } ?? "Recorded ADS-B"
+        let accumulateADS = adsFeedWindowOpenICAOs.contains(airport.icao)
+        let replayPolls = recording.polls
+
+        let processedSteps = await Task.detached(priority: .userInitiated) {
+            var detector = LandingDetector()
+            var steps: [AirportPollWorker.ProcessedPoll] = []
+            steps.reserveCapacity(clamped)
+            for index in 0..<clamped {
+                if Task.isCancelled { return steps }
+                let poll = replayPolls[index]
+                let processed = AirportPollWorker.process(
+                    detector: detector,
+                    snapshots: poll.snapshots,
+                    airport: airport,
+                    trackingRadiusNM: trackingRadius,
+                    now: poll.time,
+                    sourceName: replaySourceName,
+                    accumulateADSFeed: accumulateADS
+                )
+                detector = processed.detector
+                steps.append(processed)
+            }
+            return steps
+        }.value
+
+        if Task.isCancelled { return }
+
+        for processed in processedSteps {
+            lastAircraft = processed.aircraft
+            _ = applyAirportPollResult(
                 airport: airport,
-                sourceName: recordedReplayFileName.map { "Recorded · \($0)" } ?? "Recorded ADS-B",
-                receivedAt: poll.time
-            )
-            let output = detector.ingest(
-                snapshots: snapshots,
-                airport: airport,
-                trackingRadiusNM: AppSettings.trackingRadiusNM,
-                now: poll.time
-            )
-            lastAircraft = output.aircraft
-            recordPatternOccupancy(
-                airportICAO: airport.icao,
-                aircraft: output.aircraft,
-                at: poll.time
-            )
-            recordLandingMarkers(
-                airportICAO: airport.icao,
-                markers: output.landingMarkers,
-                at: poll.time
-            )
-            recordTakeoffMarkers(
-                airportICAO: airport.icao,
-                markers: output.takeoffMarkers,
-                at: poll.time
-            )
-            recordPatternPresenceLog(
-                airportICAO: airport.icao,
-                airportElevationFt: airport.elevationFt,
-                aircraft: output.aircraft,
-                at: poll.time
+                processed: processed,
+                accumulateADSFeed: accumulateADS
             )
         }
 
-        detectors[airport.icao] = detector
-        aircraftByAirport[airport.icao] = lastAircraft
-        if let active = detector.activeRunwayDirection {
-            activeRunwayByAirport[airport.icao] = active
-        } else {
-            activeRunwayByAirport.removeValue(forKey: airport.icao)
+        if let last = processedSteps.last {
+            detectors[airport.icao] = last.detector
+            if let active = last.activeRunwayDirection {
+                activeRunwayByAirport[airport.icao] = active
+            } else {
+                activeRunwayByAirport.removeValue(forKey: airport.icao)
+            }
         }
+        aircraftByAirport[airport.icao] = lastAircraft
         recordedPollIndex = clamped
         recordedReplayFinished = clamped >= recording.polls.count
         let inRange = lastAircraft.filter(\.inRange).count
@@ -718,6 +716,59 @@ final class TrackingEngine {
             hourlyStats: patternHourlyStatsByAirport[airportICAO] ?? []
         )
         try PatternLogExporter.write(export, to: url)
+    }
+
+    @discardableResult
+    private func applyAirportPollResult(
+        airport: Airport,
+        processed: AirportPollWorker.ProcessedPoll,
+        accumulateADSFeed: Bool
+    ) -> Int {
+        let icao = airport.icao
+        detectors[icao] = processed.detector
+        aircraftByAirport[icao] = processed.aircraft
+        if let active = processed.activeRunwayDirection {
+            activeRunwayByAirport[icao] = active
+        }
+
+        adsLatestPollByAirport[icao] = processed.adsFeedPoll
+        if accumulateADSFeed, !processed.adsLogLines.isEmpty {
+            adsSavedPollsByAirport[icao] = ADSFeedBuffer.appendSavedPolls(
+                adsSavedPollsByAirport[icao] ?? [],
+                poll: processed.adsFeedPoll
+            )
+            adsLogLinesByAirport[icao] = ADSFeedBuffer.appendLogLines(
+                adsLogLinesByAirport[icao] ?? [],
+                newLines: processed.adsLogLines
+            )
+        }
+
+        let pollTime = processed.adsFeedPoll.receivedAt
+        recordPatternOccupancy(
+            airportICAO: icao,
+            aircraft: processed.aircraft,
+            at: pollTime
+        )
+        recordLandingMarkers(
+            airportICAO: icao,
+            markers: processed.landingMarkers,
+            at: pollTime
+        )
+        recordTakeoffMarkers(
+            airportICAO: icao,
+            markers: processed.takeoffMarkers,
+            at: pollTime
+        )
+        recordPatternPresenceLog(
+            airportICAO: icao,
+            airportElevationFt: airport.elevationFt,
+            aircraft: processed.aircraft,
+            at: pollTime
+        )
+
+        let inRange = processed.aircraft.filter(\.inRange).count
+        lastAircraftCountByAirport[icao] = inRange
+        return inRange
     }
 
     private func guessInitialRunwayFromMETAR(_ airport: Airport) async {
@@ -891,57 +942,6 @@ final class TrackingEngine {
         return poll
     }
 
-    private func fetch(
-        for airport: Airport,
-        recordedPoll: ADSRecordedPoll? = nil
-    ) async throws -> (result: OpenSkyClient.FetchResult, sourceName: String) {
-        let radius = AppSettings.trackingRadiusNM
-        switch AppSettings.feedSource {
-        case .opensky:
-            let result = try await OpenSkyClient.shared.fetchStates(
-                bbox: airport.boundingBox(radiusNM: radius),
-                clientID: AppSettings.clientID,
-                clientSecret: AppSettings.clientSecret
-            )
-            return (result, "OpenSky")
-        case .adsbLol:
-            let result = try await ADSBLolClient.shared.fetchStates(
-                center: airport.coordinate,
-                radiusNM: radius
-            )
-            return (result, "Live ADS-B")
-        case .automatic:
-            do {
-                let result = try await ADSBLolClient.shared.fetchStates(
-                    center: airport.coordinate,
-                    radiusNM: radius
-                )
-                return (result, "Live ADS-B")
-            } catch {
-                let result = try await OpenSkyClient.shared.fetchStates(
-                    bbox: airport.boundingBox(radiusNM: radius),
-                    clientID: AppSettings.clientID,
-                    clientSecret: AppSettings.clientSecret
-                )
-                return (result, "OpenSky")
-            }
-        case .recorded:
-            guard let poll = recordedPoll else {
-                throw ADSRecordingError.noFileLoaded
-            }
-            let label = recordedReplayFileName.map { "Recorded · \($0)" } ?? "Recorded ADS-B"
-            return (
-                OpenSkyClient.FetchResult(
-                    snapshots: poll.snapshots,
-                    serverTime: poll.time,
-                    creditsRemaining: nil,
-                    retryAfter: nil
-                ),
-                label
-            )
-        }
-    }
-
     func clearADSFeed(for airportICAO: String? = nil) {
         if let airportICAO {
             adsLatestPollByAirport.removeValue(forKey: airportICAO)
@@ -959,34 +959,6 @@ final class TrackingEngine {
         guard !polls.isEmpty else { throw ADSSavedTrackError.empty }
         let data = try ADSSavedTrackExporter.export(polls: polls, aircraftFilter: aircraftFilter)
         try data.write(to: url, options: .atomic)
-    }
-
-    private func recordADSFeed(
-        snapshots: [AircraftSnapshot],
-        airport: Airport,
-        sourceName: String,
-        receivedAt: Date
-    ) {
-        let rows = snapshots
-            .map { ADSFeedRow(snapshot: $0, airport: airport) }
-            .sorted { $0.distanceNM < $1.distanceNM }
-        let poll = ADSFeedPoll(
-            id: UUID(),
-            receivedAt: receivedAt,
-            sourceName: sourceName,
-            airportICAO: airport.icao,
-            aircraft: rows
-        )
-        let icao = airport.icao
-        adsLatestPollByAirport[icao] = poll
-        var saved = adsSavedPollsByAirport[icao] ?? []
-        saved.append(poll)
-        adsSavedPollsByAirport[icao] = saved
-        let stamp = receivedAt.formatted(date: .omitted, time: .standard)
-        var lines = adsLogLinesByAirport[icao] ?? []
-        lines.append("[\(stamp)] \(sourceName) \(icao)  \(rows.count) aircraft")
-        lines.append(contentsOf: rows.map { "  \($0.logLine)" })
-        adsLogLinesByAirport[icao] = lines
     }
 }
 

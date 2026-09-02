@@ -80,6 +80,59 @@ struct ADSFeedPoll: Identifiable, Sendable, Hashable {
 
 extension ADSFeedPoll: Codable {}
 
+/// Bounds in-memory ADS-B history while the feed window is open (~1 hour at a 10 s poll).
+enum ADSFeedBuffer {
+    static let maxSavedPolls = 360
+    static let maxLogLines = 8_000
+
+    struct PollPackage: Sendable {
+        var poll: ADSFeedPoll
+        var logLines: [String]
+    }
+
+    static func makePoll(
+        snapshots: [AircraftSnapshot],
+        airport: Airport,
+        sourceName: String,
+        receivedAt: Date
+    ) -> PollPackage {
+        let rows = snapshots
+            .map { ADSFeedRow(snapshot: $0, airport: airport) }
+            .sorted { $0.distanceNM < $1.distanceNM }
+        let poll = ADSFeedPoll(
+            id: UUID(),
+            receivedAt: receivedAt,
+            sourceName: sourceName,
+            airportICAO: airport.icao,
+            aircraft: rows
+        )
+        let stamp = receivedAt.formatted(date: .omitted, time: .standard)
+        var logLines: [String] = []
+        logLines.append("[\(stamp)] \(sourceName) \(airport.icao)  \(rows.count) aircraft")
+        logLines.append(contentsOf: rows.map { "  \($0.logLine)" })
+        return PollPackage(poll: poll, logLines: logLines)
+    }
+
+    static func trimSavedPolls(_ polls: [ADSFeedPoll]) -> [ADSFeedPoll] {
+        guard polls.count > maxSavedPolls else { return polls }
+        return Array(polls.suffix(maxSavedPolls))
+    }
+
+    static func trimLogLines(_ lines: [String]) -> [String] {
+        guard lines.count > maxLogLines else { return lines }
+        return Array(lines.suffix(maxLogLines))
+    }
+
+    static func appendSavedPolls(_ existing: [ADSFeedPoll], poll: ADSFeedPoll) -> [ADSFeedPoll] {
+        trimSavedPolls(existing + [poll])
+    }
+
+    static func appendLogLines(_ existing: [String], newLines: [String]) -> [String] {
+        guard !newLines.isEmpty else { return existing }
+        return trimLogLines(existing + newLines)
+    }
+}
+
 struct ADSSavedTrackExport: Codable, Sendable {
     var exportedAt: Date
     var airportICAO: String
