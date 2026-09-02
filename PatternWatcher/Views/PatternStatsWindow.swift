@@ -114,6 +114,7 @@ struct PatternStatsWindow: View {
                         ("Last 5 minutes", formatOptionalInt(snapshot.landingsLast5Min)),
                         ("Last 30 minutes", formatOptionalInt(snapshot.landingsLast30Min)),
                         ("Last hour", formatOptionalInt(snapshot.landingsLastHour)),
+                        ("Last 24 hours", formatOptionalInt(snapshot.landingsLast24Hours)),
                         ("Peak per hour", formatOptionalInt(peakLandingsPerHour))
                     ]
                 )
@@ -232,7 +233,9 @@ struct PatternStatsWindow: View {
         .chartXScale(domain: fullXDomain)
         .chartYAxisLabel(kind == .occupancy ? "Aircraft" : "Landings")
         .chartYAxis {
-            AxisMarks(position: .leading, values: .automatic(desiredCount: 5)) { value in
+            AxisMarks(position: .leading, values: yAxisTickValues(for: kind)) { value in
+                AxisGridLine()
+                    .foregroundStyle(.clear)
                 AxisValueLabel {
                     if kind == .occupancy, let amount = value.as(Double.self) {
                         Text(formatAverage(amount))
@@ -244,11 +247,19 @@ struct PatternStatsWindow: View {
                 }
             }
         }
-        .chartXAxis(.hidden)
+        .chartXAxis {
+            switch kind {
+            case .occupancy:
+                hourlyGridAxisMarks(hidden: true)
+            case .landings:
+                hourlyDateAxisMarks(hidden: true)
+            }
+        }
     }
 
     private func hourlyPlotChart(kind: HourlyChartKind) -> some View {
         Chart {
+            yReferenceRuleMarks(for: kind)
             midnightRuleMarks()
             ForEach(hourlySeries) { bucket in
                 switch kind {
@@ -286,18 +297,54 @@ struct PatternStatsWindow: View {
     }
 
     private func yDomain(for kind: HourlyChartKind) -> ClosedRange<Double> {
+        let ticks = yAxisTickValues(for: kind)
+        let top = ticks.last ?? 1
+        return 0...top
+    }
+
+    private func yAxisTickValues(for kind: HourlyChartKind) -> [Double] {
+        let peak: Double
         switch kind {
         case .occupancy:
-            let peak = hourlySeries
+            peak = hourlySeries
                 .filter { $0.occupancySampleCount > 0 }
                 .map(\.averageOccupancy)
                 .max() ?? 0
-            let top = max(1, ceil(peak))
-            return 0...top
         case .landings:
-            let peak = hourlySeries.map(\.landingCount).max() ?? 0
-            let top = max(1, peak)
-            return 0...Double(top)
+            peak = Double(hourlySeries.map(\.landingCount).max() ?? 0)
+        }
+        let top = max(1, ceil(peak))
+        let step = majorYAxisStep(for: top)
+        let alignedTop = ceil(top / step) * step
+        var values: [Double] = []
+        var value = 0.0
+        while value <= alignedTop {
+            values.append(value)
+            value += step
+        }
+        return values
+    }
+
+  /// Step size for Y ticks and horizontal reference lines (major intervals).
+    private func majorYAxisStep(for top: Double) -> Double {
+        let maxValue = Int(top)
+        if maxValue <= 5 { return 1 }
+        if maxValue <= 10 { return 2 }
+        if maxValue <= 20 { return 5 }
+        if maxValue <= 50 { return 10 }
+        return Double(((maxValue + 9) / 10) * 10 / 5)
+    }
+
+    @ChartContentBuilder
+    private func yReferenceRuleMarks(for kind: HourlyChartKind) -> some ChartContent {
+        ForEach(yAxisTickValues(for: kind), id: \.self) { level in
+            RuleMark(y: .value("Count", level))
+                .foregroundStyle(
+                    level == 0
+                        ? Color.secondary.opacity(0.28)
+                        : Color.secondary.opacity(0.14)
+                )
+                .lineStyle(StrokeStyle(lineWidth: level == 0 ? 1 : 0.5))
         }
     }
 
@@ -348,30 +395,39 @@ struct PatternStatsWindow: View {
     }
 
     @AxisContentBuilder
-    private func hourlyGridAxisMarks() -> some AxisContent {
+    private func hourlyGridAxisMarks(hidden: Bool = false) -> some AxisContent {
         AxisMarks(values: .stride(by: .hour, count: 1)) { value in
             if let date = value.as(Date.self), Calendar.current.component(.hour, from: date) == 0 {
                 AxisGridLine(stroke: StrokeStyle(lineWidth: 1.2))
-                    .foregroundStyle(Color.primary.opacity(0.28))
+                    .foregroundStyle(hidden ? .clear : Color.primary.opacity(0.28))
             } else {
                 AxisGridLine()
+                    .foregroundStyle(hidden ? .clear : Color.secondary.opacity(0.22))
             }
         }
     }
 
     @AxisContentBuilder
-    private func hourlyDateAxisMarks() -> some AxisContent {
+    private func hourlyDateAxisMarks(hidden: Bool = false) -> some AxisContent {
         AxisMarks(values: .stride(by: .hour, count: 1)) { value in
             if let date = value.as(Date.self), Calendar.current.component(.hour, from: date) == 0 {
                 AxisGridLine(stroke: StrokeStyle(lineWidth: 1.2))
-                    .foregroundStyle(Color.primary.opacity(0.28))
+                    .foregroundStyle(hidden ? .clear : Color.primary.opacity(0.28))
                 AxisValueLabel(centered: true) {
                     Text(date, format: .dateTime.day().month(.abbreviated))
                         .font(.caption2.weight(.semibold))
+                        .opacity(hidden ? 0 : 1)
                 }
             } else {
                 AxisGridLine()
-                AxisValueLabel(format: .dateTime.hour(.defaultDigits(amPM: .abbreviated)))
+                    .foregroundStyle(hidden ? .clear : Color.secondary.opacity(0.22))
+                AxisValueLabel(centered: true) {
+                    if let date = value.as(Date.self) {
+                        Text(date, format: .dateTime.hour(.defaultDigits(amPM: .abbreviated)))
+                            .font(.caption2)
+                            .opacity(hidden ? 0 : 1)
+                    }
+                }
             }
         }
     }

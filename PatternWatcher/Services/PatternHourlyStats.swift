@@ -25,6 +25,7 @@ struct PatternStatsSnapshot: Sendable, Equatable {
     var landingsLast5Min: Int?
     var landingsLast30Min: Int?
     var landingsLastHour: Int?
+    var landingsLast24Hours: Int?
 }
 
 enum PatternHourlyStats {
@@ -192,6 +193,12 @@ enum PatternHourlyStats {
             landingsLastHour: optionalLandingCount(
                 markers: landingMarkers,
                 window: hourInterval,
+                span: span,
+                now: now
+            ),
+            landingsLast24Hours: optionalLandingCount(
+                markers: landingMarkers,
+                window: 24 * hourInterval,
                 span: span,
                 now: now
             )

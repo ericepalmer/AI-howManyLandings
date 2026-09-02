@@ -39,8 +39,11 @@ struct PatternTrackerView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
-                Text("Pattern")
-                    .font(.subheadline.weight(.semibold))
+                if !panelAircraft.isEmpty {
+                    Text("\(panelAircraft.count) aircraft · \(occupancyCount) toward landing")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 if let onHidePanel {
                     Button(action: onHidePanel) {
@@ -56,12 +59,6 @@ struct PatternTrackerView: View {
             .padding(.vertical, 8)
 
             if !panelAircraft.isEmpty {
-                Text("\(panelAircraft.count) aircraft · \(occupancyCount) toward landing")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 8)
-
                 Divider()
             }
 
