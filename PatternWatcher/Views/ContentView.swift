@@ -29,12 +29,15 @@ struct BootstrapView: View {
             #if os(macOS)
             AppDelegate.coordinator = coordinator
             AppDelegate.engine = engine
+            #endif
             if AppSettings.openAirportICAOs.isEmpty {
                 coordinator.finishLaunchRestore()
             } else {
                 coordinator.beginLaunchRestore(savedICAOs: AppSettings.openAirportICAOs)
+                #if os(iOS)
+                reconcileWindowsAndTracking()
+                #endif
             }
-            #endif
         }
         .sheet(isPresented: bindShowingNewAirportPicker) {
             AddAirportSheet(
@@ -99,6 +102,37 @@ struct BootstrapView: View {
     }
 }
 
+#if os(iOS)
+/// iPad window views can disappear and reappear during launch without the window closing.
+private enum AirportWindowPresence {
+    private static var depth: [String: Int] = [:]
+
+    static func appear(_ icao: String) {
+        depth[icao, default: 0] += 1
+    }
+
+    static func disappear(_ icao: String) -> Bool {
+        let next = max(0, (depth[icao] ?? 1) - 1)
+        if next == 0 {
+            depth.removeValue(forKey: icao)
+        } else {
+            depth[icao] = next
+        }
+        return next == 0
+    }
+
+    static func isVisible(_ icao: String) -> Bool {
+        (depth[icao] ?? 0) > 0
+    }
+
+    static func replace(_ old: String, with new: String) {
+        guard old != new else { return }
+        let count = max(depth.removeValue(forKey: old) ?? 1, 1)
+        depth[new, default: 0] += count
+    }
+}
+#endif
+
 private struct WelcomeView: View {
     @Environment(OpenAirportCoordinator.self) private var coordinator
 
@@ -118,7 +152,7 @@ private struct WelcomeView: View {
 }
 
 struct AirportWindowView: View {
-    let icao: String
+    @Binding var icao: String
 
     @Environment(TrackingEngine.self) private var engine
     @Environment(OpenAirportCoordinator.self) private var coordinator
@@ -163,9 +197,9 @@ struct AirportWindowView: View {
         #endif
         .onAppear {
             engine.attach(modelContext: modelContext)
+            #if os(macOS)
             AppDelegate.coordinator = coordinator
             AppDelegate.engine = engine
-            #if os(macOS)
             if !coordinator.launchRestoreComplete {
                 let saved = AppSettings.openAirportICAOs
                 if saved.contains(icao) {
@@ -180,7 +214,8 @@ struct AirportWindowView: View {
                 coordinator.registerOpen(icao)
             }
             #else
-            coordinator.registerOpen(icao)
+            AirportWindowPresence.appear(icao)
+            coordinator.ensureOpen(icao)
             #endif
             reconcileWindowsAndTracking()
             #if os(macOS)
@@ -191,12 +226,33 @@ struct AirportWindowView: View {
         }
         #if os(iOS)
         .onDisappear {
-            coordinator.closeAirportWindow(icao: icao)
-            coordinator.dismissAllSupplementary(for: icao, dismissWindow: dismissWindow)
-            syncTrackedAirports()
+            let shouldClose = AirportWindowPresence.disappear(icao)
+            guard shouldClose else { return }
+            DispatchQueue.main.async {
+                guard !AirportWindowPresence.isVisible(icao) else { return }
+                coordinator.closeAirportWindow(icao: icao)
+                coordinator.dismissAllSupplementary(for: icao, dismissWindow: dismissWindow)
+                syncTrackedAirports()
+            }
         }
         #endif
         #if os(iOS)
+        .sheet(isPresented: supplementaryPresented(.patternGraph)) {
+            PatternOccupancyWindow(airportICAO: icao)
+                .tracksSupplementaryWindow(icao: icao, kind: .patternGraph, coordinator: coordinator)
+        }
+        .sheet(isPresented: supplementaryPresented(.stats)) {
+            PatternStatsWindow(airportICAO: icao)
+                .tracksSupplementaryWindow(icao: icao, kind: .stats, coordinator: coordinator)
+        }
+        .sheet(isPresented: supplementaryPresented(.metar)) {
+            METARWindow(station: icao)
+                .tracksSupplementaryWindow(icao: icao, kind: .metar, coordinator: coordinator)
+        }
+        .sheet(isPresented: supplementaryPresented(.adsFeed)) {
+            ADSFeedWindow(airportICAO: icao)
+                .tracksSupplementaryWindow(icao: icao, kind: .adsFeed, coordinator: coordinator)
+        }
         .sheet(isPresented: bindShowingSettings) {
             SettingsView()
                 .presentationDetents([.medium, .large])
@@ -205,10 +261,28 @@ struct AirportWindowView: View {
         .sheet(isPresented: bindShowingNewAirportPicker) {
             AddAirportSheet(
                 openICAOs: Set(coordinator.openICAOs),
-                onOpen: openAnotherAirport
+                title: coordinator.replaceCurrentAirportOnPick ? "Change Airport" : "New Airport",
+                onOpen: { airport in
+                    if coordinator.replaceCurrentAirportOnPick {
+                        replaceCurrentAirport(with: airport)
+                    } else {
+                        openAnotherAirport(airport)
+                    }
+                }
             )
         }
     }
+
+    #if os(iOS)
+    private func supplementaryPresented(_ kind: SupplementaryWindowKind) -> Binding<Bool> {
+        coordinator.supplementaryBinding(
+            icao: icao,
+            kind: kind,
+            openWindow: openWindow,
+            dismissWindow: dismissWindow
+        )
+    }
+    #endif
 
     private var bindShowingNewAirportPicker: Binding<Bool> {
         Binding(
@@ -259,6 +333,27 @@ struct AirportWindowView: View {
         coordinator.registerOpen(airport.icao)
         reconcileWindowsAndTracking()
         openWindow(id: "airport", value: airport.icao)
+    }
+
+    /// Confirmed airport change. Cancel never calls this, so the current field and its feed stay put.
+    private func replaceCurrentAirport(with airport: Airport) {
+        let previous = icao
+        coordinator.dismissNewAirportPicker()
+        guard airport.icao != previous else { return }
+        coordinator.dismissAllSupplementary(for: previous, dismissWindow: dismissWindow)
+        coordinator.closeAirportWindow(icao: previous)
+        #if os(iOS)
+        AirportWindowPresence.replace(previous, with: airport.icao)
+        #elseif os(macOS)
+        if let window = NSApp.windows.first(where: {
+            AirportWindowRole.icaoFromMainAirportWindow($0) == previous
+        }) {
+            window.identifier = AirportWindowRole.main.windowIdentifier(icao: airport.icao)
+        }
+        #endif
+        coordinator.ensureOpen(airport.icao)
+        icao = airport.icao
+        reconcileWindowsAndTracking()
     }
 
     #if os(macOS)
@@ -425,6 +520,15 @@ private struct AirportDetailView: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
+                    coordinator.requestAirportChange(from: airport.icao)
+                } label: {
+                    Label("Change Airport", systemImage: "airport.tower")
+                        .labelStyle(.iconOnly)
+                }
+                .help("Change airport")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
                     #if os(macOS)
                     openSettings()
                     #else
@@ -453,7 +557,7 @@ private struct AirportDetailView: View {
 }
 
 #Preview {
-    AirportWindowView(icao: "KPAO")
+    AirportWindowView(icao: .constant("KPAO"))
         .environment(TrackingEngine())
         .environment(OpenAirportCoordinator())
         .modelContainer(for: [StoredAirport.self], inMemory: true)

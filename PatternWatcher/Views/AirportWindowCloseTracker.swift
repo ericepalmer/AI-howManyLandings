@@ -53,11 +53,11 @@ struct AirportWindowCloseTracker: NSViewRepresentable {
 
         func attach(to view: NSView) {
             guard let window = view.window else { return }
+            window.identifier = role.windowIdentifier(icao: icao)
             guard attachedWindow !== window else { return }
             attachedWindow = window
             previousDelegate = window.delegate
             window.delegate = self
-            window.identifier = role.windowIdentifier(icao: icao)
         }
 
         func windowWillClose(_ notification: Notification) {

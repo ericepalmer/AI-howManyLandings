@@ -3,6 +3,7 @@ import SwiftUI
 
 struct AddAirportSheet: View {
     let openICAOs: Set<String>
+    var title: String = "New Airport"
     var onOpen: (Airport) -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -62,7 +63,7 @@ struct AddAirportSheet: View {
                     }
                 }
             }
-            .navigationTitle("New Airport")
+            .navigationTitle(title)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif

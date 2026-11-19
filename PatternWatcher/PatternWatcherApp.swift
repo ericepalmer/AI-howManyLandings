@@ -122,10 +122,13 @@ struct PatternWatcherApp: App {
         }
 
         WindowGroup(id: "airport", for: String.self) { $icao in
-            if let icao {
-                AirportWindowView(icao: icao)
-                    .environment(engine)
-                    .environment(coordinator)
+            if icao != nil {
+                AirportWindowView(icao: Binding(
+                    get: { icao ?? "" },
+                    set: { icao = $0 }
+                ))
+                .environment(engine)
+                .environment(coordinator)
             }
         }
         .modelContainer(for: [StoredAirport.self])

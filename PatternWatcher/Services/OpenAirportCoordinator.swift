@@ -39,6 +39,8 @@ final class OpenAirportCoordinator {
     var showingNewAirportPicker = false
     /// Which airport window presents the new-airport sheet (`nil` = bootstrap welcome).
     var newAirportPickerHostICAO: String?
+    /// True when the picker should replace the host airport instead of opening another window.
+    var replaceCurrentAirportOnPick = false
     #if os(iOS)
     var showingSettings = false
     /// Which airport window presents the settings sheet.
@@ -61,6 +63,16 @@ final class OpenAirportCoordinator {
         if !launchRestoreComplete {
             guard openICAOs.contains(icao) else { return }
         }
+        if !openICAOs.contains(icao) {
+            openICAOs.append(icao)
+        }
+        if launchRestoreComplete {
+            persistOpenICAOs()
+        }
+    }
+
+    /// Record an airport whose window is on screen, including during iPad launch.
+    func ensureOpen(_ icao: String) {
         if !openICAOs.contains(icao) {
             openICAOs.append(icao)
         }
@@ -189,16 +201,26 @@ final class OpenAirportCoordinator {
 
     func requestNewAirport() {
         #if os(macOS)
-        newAirportPickerHostICAO = keyWindowAirportICAO() ?? openICAOs.last
+        requestNewAirport(from: keyWindowAirportICAO() ?? openICAOs.last)
         #else
-        newAirportPickerHostICAO = openICAOs.last
+        requestNewAirport(from: openICAOs.last)
         #endif
+    }
+
+    func requestNewAirport(from hostICAO: String?) {
+        newAirportPickerHostICAO = hostICAO
         showingNewAirportPicker = true
+    }
+
+    func requestAirportChange(from hostICAO: String) {
+        replaceCurrentAirportOnPick = true
+        requestNewAirport(from: hostICAO)
     }
 
     func dismissNewAirportPicker() {
         showingNewAirportPicker = false
         newAirportPickerHostICAO = nil
+        replaceCurrentAirportOnPick = false
     }
 
     #if os(iOS)
@@ -259,10 +281,14 @@ final class OpenAirportCoordinator {
     ) {
         if open {
             registerSupplementaryOpen(icao: icao, kind: kind)
+            #if os(macOS)
             openWindow(id: kind.windowID, value: icao)
+            #endif
         } else {
             unregisterSupplementaryOpen(icao: icao, kind: kind)
+            #if os(macOS)
             dismissWindow(id: kind.windowID, value: icao)
+            #endif
         }
     }
 
@@ -311,19 +337,50 @@ private struct SupplementaryWindowLifecycleModifier: ViewModifier {
     let icao: String
     let kind: SupplementaryWindowKind
     let coordinator: OpenAirportCoordinator
+    #if os(iOS)
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.dismissWindow) private var dismissWindow
+    #endif
 
     func body(content: Content) -> some View {
         content
             .focusedValue(\.airportWindowICAO, icao)
             .onAppear {
-                coordinator.registerSupplementaryOpen(icao: icao, kind: kind)
                 #if os(macOS)
+                coordinator.registerSupplementaryOpen(icao: icao, kind: kind)
                 AppDelegate.coordinator = coordinator
+                #else
+                // iPad restores Plot/Stats/METAR/ADS as full-screen windows. Those are sheets
+                // on the airport window now, so close any restored standalone window.
+                DispatchQueue.main.async {
+                    dismissWindow(id: kind.windowID, value: icao)
+                }
                 #endif
             }
             #if os(macOS)
             .background(AirportWindowCloseTracker(icao: icao, role: .auxiliary, coordinator: coordinator))
             #endif
-            .onDisappear { coordinator.unregisterSupplementaryOpen(icao: icao, kind: kind) }
+            #if os(iOS)
+            .presentationDragIndicator(.visible)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                HStack {
+                    Button("Close") {
+                        coordinator.unregisterSupplementaryOpen(icao: icao, kind: kind)
+                        dismiss()
+                        dismissWindow(id: kind.windowID, value: icao)
+                    }
+                    .font(.body.weight(.semibold))
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(.bar)
+            }
+            #endif
+            .onDisappear {
+                #if os(macOS)
+                coordinator.unregisterSupplementaryOpen(icao: icao, kind: kind)
+                #endif
+            }
     }
 }
